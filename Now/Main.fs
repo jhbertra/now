@@ -4,7 +4,7 @@ open FSharpPlus.Operators
 
 [<EntryPoint>]
 let main argv =    
-    let result = parseCommand (List.ofArray argv) |> map runCommand >>= interpret
+    let result = parseCommand (List.ofArray argv) |> Result.map runCommand >>= interpret
     match result with
     | Ok () ->
         0

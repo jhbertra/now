@@ -7,11 +7,17 @@ module Now =
         Domain
     *)
 
+    type RunMigrationsCommand =
+    | VersionGlobal
+    | VersionLocal
+
     type Command =
     | InitGlobal
     | InitLocal
     | UninstallGlobal
     | UninstallLocal
+    | WithGlobalMigrations of RunMigrationsCommand
+    | WithLocalMigrations of RunMigrationsCommand
 
     type Error =
     | EnvironmentError of Environment.Error
@@ -22,11 +28,11 @@ module Now =
         DSL
     *)
 
-    type NowT<'a> =
-    | Run of CommandLine.Program<Data.Program<Environment.Program<'a>>>
+    type NowT<'a, 'b> =
+    | Run of CommandLine.Program<Data.Program<Environment.Program<'a>, 'b>>
 
-    type Program<'a> =
-    | Free of NowT<Program<'a>>
+    type Program<'a, 'b> =
+    | Free of NowT<Program<'a, 'b>, 'b>
     | Pure of 'a
 
     let mapStack f = CommandLine.map (Data.map (Environment.map f))
@@ -36,7 +42,7 @@ module Now =
     | Free x -> x |> mapT (bind f) |> Free
     | Pure x -> f x
 
-    type Program<'a> with
+    type Program<'a, 'b> with
         static member Return x = Pure x
         static member (>>=) (x, f) = bind f x
 
@@ -64,6 +70,7 @@ module Now =
         Public API
     *)
     
+    open System
     open Now.Environment
     open Now.Data
     open Now.CommandLine
@@ -74,6 +81,8 @@ module Now =
     | "init" :: opts -> Ok InitLocal
     | "uninstall" :: opts when opts |> List.contains "-g" -> Ok UninstallGlobal
     | "uninstall" :: opts -> Ok UninstallLocal
+    | "version" :: opts when opts |> List.contains "-g" -> WithGlobalMigrations VersionGlobal |> Ok
+    | "version" :: opts -> WithLocalMigrations VersionLocal |> Ok
     | _ -> Error CommandLineInvalid
 
 
@@ -90,7 +99,38 @@ module Now =
     | DataError (Data.LocalDatabaseExists) -> "A local Now database already exists"
     | DataError (Data.GlobalDatabaseMissing) -> "The global Now database is missing"
     | DataError (Data.LocalDatabaseMissing) -> "A local Now database is missing"
+    | DataError (Data.CurrentVersionMissingFromMigrations version) -> sprintf "The current database version %A is not in the migration sequence" version
+    | DataError (Data.MigrationSequenceInvalid version) -> sprintf "Unexpected migration version: %A" version
+    | DataError (Data.MigrationFailed (version, e)) -> sprintf "Error running migration %A: %s" version e.Message
 
+    let runCommandPostMigrations = function
+    | VersionGlobal ->
+        monad {
+            let! env = liftEnv readGlobalEnvironment
+            let! globalVersion = liftDat <| getGlobalMigrationVersion env
+            match globalVersion with
+            | Some x -> 
+                do! liftCL <| writeLine (sprintf "Database Version: %d.%s" x.version (x.id.ToString()))
+            | None ->
+                do! liftCL <| writeLine "Global database has no migration history"
+        }
+    | VersionLocal ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            let! globalVersion = liftDat <| getGlobalMigrationVersion env.globalEnv
+            let! localVersion = liftDat <| getLocalMigrationVersion env
+            match globalVersion with
+            | Some x -> 
+                do! liftCL <| writeLine (sprintf "Global database Version: %d.%s" x.version (x.id.ToString()))
+            | None ->
+                do! liftCL <| writeLine "Global database has no migration history"
+            match localVersion with
+            | Some x -> 
+                do! liftCL <| writeLine (sprintf "Local database Version: %d.%s" x.version (x.id.ToString()))
+            | None ->
+                do! liftCL <| writeLine "Local database has no migration history"
+        }
+    
     let runCommand = function
     | InitGlobal ->
         monad {
@@ -123,4 +163,28 @@ module Now =
             do! liftDat <| uninstallLocalData env
             do! liftCL <| writeLine "Removing local directory..."
             return! liftEnv uninstallLocalDir
+        }
+    | WithGlobalMigrations cmd ->
+        monad {
+            let! env = liftEnv readGlobalEnvironment
+            do! liftDat
+                <| runGlobalMigrations
+                    env
+                    [
+                        ({id = Guid("A1AFB6E3-4E88-4909-8632-CFD888845D64"); version = 1}, fun _ -> printfn "Running 1")
+                        ({id = Guid("CFBDB731-2D57-487F-B3C6-B10B0FA698AF"); version = 2}, fun _ -> printfn "Running 2")
+                    ]
+            return! runCommandPostMigrations cmd
+        }
+    | WithLocalMigrations cmd ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            do! liftDat
+                <| runLocalMigrations
+                    env
+                    [
+                        ({id = Guid("A1AFB6E3-4E88-4909-8632-CFD888845D64"); version = 1}, fun _ -> printfn "Running 1")
+                        ({id = Guid("CFBDB731-2D57-487F-B3C6-B10B0FA698AF"); version = 2}, fun _ -> printfn "Running 2")
+                    ]
+            return! runCommandPostMigrations cmd
         }
