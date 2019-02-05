@@ -4,6 +4,12 @@ module Now.Result
 open FSharpPlus.Operators
 
 
+let filter f e = function
+| Ok a when f a -> Ok a
+| Error e -> Error e
+| _ -> Error e
+
+
 let catch f =
     try
         f () |> Ok
