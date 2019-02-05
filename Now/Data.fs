@@ -41,10 +41,6 @@ module Data =
     *)
 
     type Instruction<'a, 'b> =
-    | ExecuteNonQueryGlobal of GlobalEnvironment * string * (int -> 'a)
-    | ExecuteNonQueryLocal of LocalEnvironment * string * (int -> 'a)
-    | ExecuteQueryGlobal of GlobalEnvironment * string * (SQLiteDataReader -> 'b) * ('b list -> 'a)
-    | ExecuteQueryLocal of LocalEnvironment * string * (SQLiteDataReader -> 'b) * ('b list -> 'a)
     | GetGlobalMigrationHistory of GlobalEnvironment * (MigrationHistoryRecord list -> 'a)
     | GetLocalMigrationHistory of LocalEnvironment * (MigrationHistoryRecord list -> 'a)
     | GetGlobalMigrationVersion of GlobalEnvironment * (MigrationVersion option -> 'a)
@@ -61,10 +57,6 @@ module Data =
     | Pure of 'a
 
     let private mapI f = function
-    | ExecuteNonQueryGlobal(env, sql, next) -> ExecuteNonQueryGlobal(env, sql, next >> f)
-    | ExecuteNonQueryLocal(env, sql, next) -> ExecuteNonQueryLocal(env, sql, next >> f)
-    | ExecuteQueryGlobal(env, sql, map, next) -> ExecuteQueryGlobal(env, sql, map, next >> f)
-    | ExecuteQueryLocal(env, sql, map, next) -> ExecuteQueryLocal(env, sql, map, next >> f)
     | GetGlobalMigrationHistory(env, next) -> GetGlobalMigrationHistory(env, next >> f)
     | GetLocalMigrationHistory(env, next) -> GetLocalMigrationHistory(env, next >> f)
     | GetGlobalMigrationVersion(env, next) -> GetGlobalMigrationVersion(env, next >> f)
@@ -86,10 +78,6 @@ module Data =
         static member Return x = Pure x
         static member (>>=) (x, f) = bind f x
 
-    let executeNonQueryGlobal env sql = Free(ExecuteNonQueryGlobal(env, sql, Pure))
-    let executeNonQueryLocal env sql = Free(ExecuteNonQueryLocal(env, sql, Pure))
-    let executeQueryGlobal env sql map = Free(ExecuteQueryGlobal(env, sql, map, Pure))
-    let executeQueryLocal env sql map = Free(ExecuteQueryLocal(env, sql, map, Pure))
     let getGlobalMigrationHistory env = Free(GetGlobalMigrationHistory(env, Pure))
     let getLocalMigrationHistory env = Free(GetLocalMigrationHistory(env, Pure))
     let getGlobalMigrationVersion env = Free(GetGlobalMigrationVersion(env, Pure))
@@ -110,8 +98,8 @@ module Data =
     open FSharpPlus.Builders
     open FSharpPlus.Operators
 
-    let private buildDatabaseFile dir = Path.Combine(dir, "now.sqlite")
-    let private buildConnectionString file = sprintf "Data Source=%s;Version=3;" file
+    let buildDatabaseFile dir = Path.Combine(dir, "now.sqlite")
+    let buildConnectionString file = sprintf "Data Source=%s;Version=3;" file
 
     let private initDb e dbFile =
         try
@@ -137,7 +125,7 @@ module Data =
         | :? SQLiteException as e -> Error(SqlError e)
         | e -> Error(IoError e)
 
-    let private executeNonQuery sql e dbFile =
+    let executeNonQuery sql e parameters dbFile =
         try
             if not (File.Exists dbFile) then    
                 Error e
@@ -147,6 +135,8 @@ module Data =
                 connection.Open()
                 use command = connection.CreateCommand()
                 command.CommandText <- sql
+                for (name, value) in parameters do
+                    command.Parameters.AddWithValue(name, value) |> ignore
                 let i = command.ExecuteNonQuery()
                 connection.Close()
                 Ok i
@@ -154,7 +144,7 @@ module Data =
         | :? SQLiteException as e -> Error(SqlError e)
         | e -> Error(IoError e)
 
-    let private executeQuery sql e map dbFile =
+    let private executeQuery sql e map parameters dbFile =
         try
             if not (File.Exists dbFile) then    
                 Error e
@@ -164,6 +154,8 @@ module Data =
                 connection.Open()
                 use command = connection.CreateCommand()
                 command.CommandText <- sql
+                for (name, value) in parameters do
+                    command.Parameters.AddWithValue(name, value) |> ignore
                 let r = command.ExecuteReader()
                 let mutable results = []
                 while r.Read() do results <- (map r)::results
@@ -172,6 +164,12 @@ module Data =
         with
         | :? SQLiteException as e -> Error(SqlError e)
         | e -> Error(IoError e)
+
+    let executeLocalNonQuery sql = executeNonQuery sql LocalDatabaseMissing
+    let executeGlobalNonQuery sql = executeNonQuery sql GlobalDatabaseMissing
+
+    let executeLocalQuery sql = executeQuery sql LocalDatabaseMissing
+    let executeGlobalQuery sql = executeQuery sql GlobalDatabaseMissing
 
     let private removeDb dbFile = Result.catch (fun () -> File.Delete dbFile) |> Result.mapError IoError
 
@@ -192,6 +190,7 @@ module Data =
                     { id = reader.GetGuid 1
                       version = reader.GetInt32 2 } }
             )
+            []
 
     let private getMigrationVersion =
         executeQuery
@@ -208,6 +207,7 @@ module Data =
                 { id = reader.GetGuid 0
                   version = reader.GetInt32 1 }
             )
+            []
         >> Result.map List.tryHead
 
     let rec runMigrationsBody (connection : SQLiteConnection) = function
@@ -284,30 +284,6 @@ module Data =
 
     let rec interpret = function
     | Pure a -> Ok a
-
-    | Free(ExecuteNonQueryGlobal(env, sql, next)) ->
-        buildDatabaseFile env.globalDir
-        |> executeNonQuery sql GlobalDatabaseMissing
-        |> Result.map next
-        >>= interpret
-
-    | Free(ExecuteNonQueryLocal(env, sql, next)) ->
-        buildDatabaseFile env.localDir
-        |> executeNonQuery sql LocalDatabaseMissing
-        |> Result.map next
-        >>= interpret
-
-    | Free(ExecuteQueryGlobal(env, sql, map, next)) ->
-        buildDatabaseFile env.globalDir
-        |> executeQuery sql GlobalDatabaseMissing map
-        |> Result.map next
-        >>= interpret
-
-    | Free(ExecuteQueryLocal(env, sql, map, next)) ->
-        buildDatabaseFile env.localDir
-        |> executeQuery sql LocalDatabaseMissing map
-        |> Result.map next
-        >>= interpret
 
     | Free(GetGlobalMigrationHistory(env, next)) ->
         buildDatabaseFile env.globalDir

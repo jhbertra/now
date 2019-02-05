@@ -8,6 +8,8 @@ module Now =
     *)
 
     type RunMigrationsCommand =
+    | GetTasks
+    | CreateTask of string
     | VersionGlobal
     | VersionLocal
 
@@ -23,19 +25,21 @@ module Now =
     | EnvironmentError of Environment.Error
     | DataError of Data.Error
     | CommandLineInvalid
+    | TaskCommandInvalid
+    | TaskExists of string
 
     (*
         DSL
     *)
 
     type NowT<'a, 'b> =
-    | Run of CommandLine.Program<Data.Program<Environment.Program<'a>, 'b>>
+    | Run of CommandLine.Program<Task.Program<Data.Program<Environment.Program<Result<'a, Error>>, 'b>>>
 
     type Program<'a, 'b> =
     | Free of NowT<Program<'a, 'b>, 'b>
     | Pure of 'a
 
-    let mapStack f = CommandLine.map (Data.map (Environment.map f))
+    let mapStack f = CommandLine.map (Task.map (Data.map (Environment.map (Result.map f))))
     let mapT f (Run p) = mapStack f p |> Run
 
     let rec bind f = function
@@ -47,9 +51,11 @@ module Now =
         static member (>>=) (x, f) = bind f x
 
     let wrap x = x |> Run |> mapT Pure |> Free
-    let liftCL x = wrap <| CommandLine.map (Data.Pure << Environment.Pure) x
-    let liftDat x = wrap <| CommandLine.Pure (Data.map Environment.Pure x)
-    let liftEnv x = wrap <| CommandLine.Pure (Data.Pure x)
+    let liftCL x = wrap <| CommandLine.map (Task.Pure << Data.Pure << Environment.Pure << Ok) x
+    let liftTsk x = wrap <| CommandLine.Pure (Task.map (Data.Pure << Environment.Pure << Ok) x)
+    let liftDat x = wrap <| CommandLine.Pure (Task.Pure (Data.map (Environment.Pure << Ok) x))
+    let liftEnv x = wrap <| CommandLine.Pure (Task.Pure (Data.Pure (Environment.map Ok x)))
+    let liftRes x = wrap <| CommandLine.Pure (Task.Pure (Data.Pure (Environment.Pure x)))
 
     (*
         Interpreter
@@ -62,32 +68,35 @@ module Now =
     | Free(Run p) ->
         p
         |> CommandLine.interpret
-        |> (Data.interpret >> Result.mapError DataError)
+        |> (Task.interpret >> Result.mapError DataError)
+        >>= (Data.interpret >> Result.mapError DataError)
         >>= (Environment.interpret >> Result.mapError EnvironmentError)
+        >>= id
         >>= interpret
 
     (*
         Public API
     *)
-    
-    open System
-    open Now.Environment
-    open Now.Data
-    open Now.CommandLine
-    open FSharpPlus.Builders
+
+    let parseTask = function
+    | [] -> Ok (WithLocalMigrations GetTasks)
+    | ["create"; name] when (name.StartsWith("-")) |> not -> Ok (WithLocalMigrations (CreateTask name))
+    | _ -> Error TaskCommandInvalid
 
     let parseCommand = function
     | "init" :: opts when opts |> List.contains "-g" -> Ok InitGlobal
     | "init" :: opts -> Ok InitLocal
+    | "task" :: opts -> parseTask opts
     | "uninstall" :: opts when opts |> List.contains "-g" -> Ok UninstallGlobal
     | "uninstall" :: opts -> Ok UninstallLocal
     | "version" :: opts when opts |> List.contains "-g" -> WithGlobalMigrations VersionGlobal |> Ok
     | "version" :: opts -> WithLocalMigrations VersionLocal |> Ok
     | _ -> Error CommandLineInvalid
 
-
     let renderEnvironmentError = function
     | CommandLineInvalid -> "Command Line Invalid"
+    | TaskCommandInvalid -> "Task Command Line Invalid"
+    | TaskExists name -> sprintf "Task exists: %s" name
     | EnvironmentError (Environment.IoError exn) -> sprintf "IO Error: %s" exn.Message
     | EnvironmentError (Environment.GlobalDirExists) -> "The global Now directory already exists"
     | EnvironmentError (Environment.LocalDirExists) -> "A local Now directory already exists"
@@ -102,8 +111,34 @@ module Now =
     | DataError (Data.CurrentVersionMissingFromMigrations version) -> sprintf "The current database version %A is not in the migration sequence" version
     | DataError (Data.MigrationSequenceInvalid version) -> sprintf "Unexpected migration version: %A" version
     | DataError (Data.MigrationFailed (version, e)) -> sprintf "Error running migration %A: %s" version e.Message
+    
+    open System
+    open Now.Environment
+    open Now.Data
+    open Now.Task
+    open Now.CommandLine
+    open FSharpPlus.Builders
 
     let runCommandPostMigrations = function
+    | RunMigrationsCommand.CreateTask name ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            let! task = liftTsk <| getTask env name
+            if Option.isSome task then
+                return! liftRes <| Error (TaskExists name)
+            else
+                do! liftTsk <| createTask env name
+        }
+    | RunMigrationsCommand.GetTasks ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            let! tasks = liftTsk <| getTasks env
+            if List.isEmpty tasks then
+                do! liftCL <| writeLine "No current tasks, to create one run 'now task <name>'"
+            else
+                for task in tasks do
+                    do! liftCL <| writeLine task.name
+        }
     | VersionGlobal ->
         monad {
             let! env = liftEnv readGlobalEnvironment
@@ -130,6 +165,10 @@ module Now =
             | None ->
                 do! liftCL <| writeLine "Local database has no migration history"
         }
+        
+    open Now.Migrations
+    
+    let migration (id : string) version run = ({id = Guid.Parse(id); version = version}, run)
     
     let runCommand = function
     | InitGlobal ->
@@ -167,13 +206,7 @@ module Now =
     | WithGlobalMigrations cmd ->
         monad {
             let! env = liftEnv readGlobalEnvironment
-            do! liftDat
-                <| runGlobalMigrations
-                    env
-                    [
-                        ({id = Guid("A1AFB6E3-4E88-4909-8632-CFD888845D64"); version = 1}, fun _ -> printfn "Running 1")
-                        ({id = Guid("CFBDB731-2D57-487F-B3C6-B10B0FA698AF"); version = 2}, fun _ -> printfn "Running 2")
-                    ]
+            do! liftDat <| runGlobalMigrations env []
             return! runCommandPostMigrations cmd
         }
     | WithLocalMigrations cmd ->
@@ -183,8 +216,7 @@ module Now =
                 <| runLocalMigrations
                     env
                     [
-                        ({id = Guid("A1AFB6E3-4E88-4909-8632-CFD888845D64"); version = 1}, fun _ -> printfn "Running 1")
-                        ({id = Guid("CFBDB731-2D57-487F-B3C6-B10B0FA698AF"); version = 2}, fun _ -> printfn "Running 2")
+                        migration "FD2D8875-2969-4BD9-8BE3-A230E286D15D" 1 Local1_AddTask.run
                     ]
             return! runCommandPostMigrations cmd
         }
