@@ -10,6 +10,8 @@ module Now =
     type RunMigrationsCommand =
     | GetTasks
     | CreateTask of string
+    | RenameTask of string * string
+    | DeleteTask of string
     | VersionGlobal
     | VersionLocal
 
@@ -27,6 +29,7 @@ module Now =
     | CommandLineInvalid
     | TaskCommandInvalid
     | TaskExists of string
+    | TaskNotFound of string
 
     (*
         DSL
@@ -81,6 +84,10 @@ module Now =
     let parseTask = function
     | [] -> Ok (WithLocalMigrations GetTasks)
     | ["create"; name] when (name.StartsWith("-")) |> not -> Ok (WithLocalMigrations (CreateTask name))
+    | ["delete"; name] when (name.StartsWith("-")) |> not -> Ok (WithLocalMigrations (DeleteTask name))
+    | ["rename"; oldName; newName] when
+        (oldName.StartsWith("-")) |> not && (newName.StartsWith("-")) |> not ->
+            Ok (WithLocalMigrations (RenameTask (oldName, newName)))
     | _ -> Error TaskCommandInvalid
 
     let parseCommand = function
@@ -97,6 +104,7 @@ module Now =
     | CommandLineInvalid -> "Command Line Invalid"
     | TaskCommandInvalid -> "Task Command Line Invalid"
     | TaskExists name -> sprintf "Task exists: %s" name
+    | TaskNotFound name -> sprintf "Task not found: %s" name
     | EnvironmentError (Environment.IoError exn) -> sprintf "IO Error: %s" exn.Message
     | EnvironmentError (Environment.GlobalDirExists) -> "The global Now directory already exists"
     | EnvironmentError (Environment.LocalDirExists) -> "A local Now directory already exists"
@@ -128,6 +136,27 @@ module Now =
                 return! liftRes <| Error (TaskExists name)
             else
                 do! liftTsk <| createTask env name
+        }
+    | RunMigrationsCommand.DeleteTask name ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            let! task = liftTsk <| getTask env name
+            if Option.isNone task then
+                return! liftRes <| Error (TaskNotFound name)
+            else
+                do! liftTsk <| deleteTask env name
+        }
+    | RunMigrationsCommand.RenameTask (oldName, newName) ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            let! task = liftTsk <| getTask env oldName
+            let! newTask = liftTsk <| getTask env newName
+            if Option.isNone task then
+                return! liftRes <| Error (TaskNotFound oldName)
+            elif Option.isSome newTask then
+                return! liftRes <| Error (TaskExists newName)
+            else
+                do! liftTsk <| renameTask env oldName newName
         }
     | RunMigrationsCommand.GetTasks ->
         monad {
