@@ -88,6 +88,8 @@ module Now =
     | DataError (Data.SqlError exn) -> sprintf "SQL Error: %s" exn.Message
     | DataError (Data.GlobalDatabaseExists) -> "The global Now database already exists"
     | DataError (Data.LocalDatabaseExists) -> "A local Now database already exists"
+    | DataError (Data.GlobalDatabaseMissing) -> "The global Now database is missing"
+    | DataError (Data.LocalDatabaseMissing) -> "A local Now database is missing"
 
     let runCommand = function
     | InitGlobal ->

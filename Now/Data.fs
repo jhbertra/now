@@ -17,6 +17,8 @@ module Data =
     | SqlError of SQLiteException
     | GlobalDatabaseExists
     | LocalDatabaseExists
+    | GlobalDatabaseMissing
+    | LocalDatabaseMissing
 
 
     (*
@@ -24,6 +26,8 @@ module Data =
     *)
 
     type Instruction<'a> =
+    | ExecuteNonQueryGlobal of GlobalEnvironment * string * (int -> 'a)
+    | ExecuteNonQueryLocal of LocalEnvironment * string * (int -> 'a)
     | InitGlobalData of GlobalEnvironment * 'a
     | InitLocalData of LocalEnvironment * 'a
     | UninstallGlobalData of GlobalEnvironment * 'a
@@ -34,6 +38,8 @@ module Data =
     | Pure of 'a
 
     let private mapI f = function
+    | ExecuteNonQueryGlobal(env, sql, next) -> ExecuteNonQueryGlobal(env, sql, next >> f)
+    | ExecuteNonQueryLocal(env, sql, next) -> ExecuteNonQueryLocal(env, sql, next >> f)
     | InitGlobalData(env, next) -> InitGlobalData(env, next |> f)
     | InitLocalData(env, next) -> InitLocalData(env, next |> f)
     | UninstallGlobalData(env, next) -> UninstallGlobalData(env, next |> f)
@@ -49,11 +55,12 @@ module Data =
         static member Return x = Pure x
         static member (>>=) (x, f) = bind f x
 
+    let executeNonQueryGlobal env sql = Free(ExecuteNonQueryGlobal(env, sql, Pure))
+    let executeNonQueryLocal env sql = Free(ExecuteNonQueryLocal(env, sql, Pure))
     let initGlobalData env = Free(InitGlobalData(env, Pure()))
     let initLocalData env = Free(InitLocalData(env, Pure()))
     let uninstallGlobalData env = Free(UninstallGlobalData(env, Pure()))
     let uninstallLocalData env = Free(UninstallLocalData(env, Pure()))
-
 
 
     (*
@@ -90,10 +97,37 @@ module Data =
         | :? SQLiteException as e -> Error(SqlError e)
         | e -> Error(IoError e)
 
+    let private executeNonQuery sql e dbFile =
+        try
+            if not (File.Exists dbFile) then    
+                Error e
+            else
+                let connectionString = buildConnectionString dbFile
+                let sqliteConnection = new SQLiteConnection(connectionString)
+                sqliteConnection.Open()
+                let command = sqliteConnection.CreateCommand()
+                command.CommandText <- sql
+                let i = command.ExecuteNonQuery()
+                sqliteConnection.Close()
+                Ok i
+        with
+        | :? SQLiteException as e -> Error(SqlError e)
+        | e -> Error(IoError e)
+
     let private removeDb dbFile = Result.catch (fun () -> File.Delete dbFile) |> Result.mapError IoError
 
     let rec interpret = function
     | Pure a -> Ok a
+    | Free(ExecuteNonQueryGlobal(env, sql, next)) ->
+        buildDatabaseFile env.globalDir
+        |> executeNonQuery sql GlobalDatabaseMissing
+        |> Result.map next
+        >>= interpret
+    | Free(ExecuteNonQueryLocal(env, sql, next)) ->
+        buildDatabaseFile env.localDir
+        |> executeNonQuery sql LocalDatabaseMissing
+        |> Result.map next
+        >>= interpret
     | Free(InitGlobalData(env, next)) ->
         buildDatabaseFile env.globalDir
         |> initDb GlobalDatabaseExists
