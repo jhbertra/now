@@ -1,40 +1,42 @@
-namespace Now
+module Now.Eff
 
+type Error =
+    | FileError of Fs.Error
+    | SqlError of Sql.Error
 
-module Eff =
+type EffT<'a> = Run of CommandLine.Program<Fs.Program<Sql.Program<Result<'a, Error>>>>
 
-    type Error = FileError of Fs.Error
+type Program<'a> =
+    | Free of EffT<Program<'a>>
+    | Pure of 'a
 
-    type EffT<'a> = Run of CommandLine.Program<Fs.Program<Result<'a, Error>>>
+let mapStack f = CommandLine.map (Fs.map (Sql.map (Result.map f)))
+let mapT f (Run p) = mapStack f p |> Run
 
-    type Program<'a> =
-        | Free of EffT<Program<'a>>
-        | Pure of 'a
+let rec bind f = function
+    | Free x -> x |> mapT (bind f) |> Free
+    | Pure x -> f x
 
-    let mapStack f = CommandLine.map (Fs.map (Result.map f))
-    let mapT f (Run p) = mapStack f p |> Run
+type Program<'a> with
 
-    let rec bind f = function
-        | Free x -> x |> mapT (bind f) |> Free
-        | Pure x -> f x
+    static member Return x = Pure x
 
-    type Program<'a> with
+    static member (>>=) (x, f) = bind f x
 
-        static member Return x = Pure x
+let wrap x = x |> Run |> mapT Pure |> Free
+let liftCL x = wrap <| CommandLine.map (Fs.Pure << Sql.Pure << Ok) x
+let liftFS x = wrap <| CommandLine.Pure (Fs.map (Sql.Pure << Ok) x)
+let liftSql x = wrap <| CommandLine.Pure (Fs.Pure (Sql.map Ok x))
+let liftRes x = wrap <| CommandLine.Pure (Fs.Pure (Sql.Pure x))
 
-        static member (>>=) (x, f) = bind f x
+open FSharpPlus.Operators
 
-    let wrap x = x |> Run |> mapT Pure |> Free
-    let liftFS x = wrap <| CommandLine.Pure (Fs.map Ok x)
-    let liftRes x = wrap <| CommandLine.Pure (Fs.Pure x)
-
-    open FSharpPlus.Operators
-
-    let rec interpret = function
-        | Pure a -> Ok a
-        | Free(Run p) ->
-            p
-            |> CommandLine.interpret
-            |> (Fs.interpret >> Result.mapError FileError)
-            >>= id
-            >>= interpret
+let rec interpret = function
+    | Pure a -> Ok a
+    | Free(Run p) ->
+        p
+        |> CommandLine.interpret
+        |> (Fs.interpret >> Result.mapError FileError)
+        >>= (Sql.interpret >> Result.mapError SqlError)
+        >>= id
+        >>= interpret
