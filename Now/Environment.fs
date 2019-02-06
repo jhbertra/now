@@ -1,19 +1,26 @@
 namespace Now
 
+open System.IO
+open Fs
+open Sql
+open Eff
+open FSharpPlus.Builders
+
 (*
     Domain
 *)
 
-
 type GlobalEnvironment = {
     globalDir : string
- }
+    database : Database
+}
 
 
 type LocalEnvironment = {
     localDir : string
+    database : Database
     globalEnv : GlobalEnvironment
- }
+}
 
 
 module Environment =
@@ -37,10 +44,10 @@ module Environment =
     type Instruction<'a> =
     | ReadGlobalEnvironment of (GlobalEnvironment -> 'a)
     | ReadLocalEnvironment of (LocalEnvironment -> 'a)
-    | InitGlobalDir of 'a
-    | InitLocalDir of 'a
-    | UninstallGlobalDir of 'a
-    | UninstallLocalDir of 'a
+    | InitGlobal of 'a
+    | InitLocal of 'a
+    | UninstallGlobal of 'a
+    | UninstallLocal of 'a
 
     type Program<'a> =
     | Free of Instruction<Program<'a>>
@@ -49,10 +56,10 @@ module Environment =
     let private mapI f = function
     | ReadGlobalEnvironment next -> ReadGlobalEnvironment(next >> f)
     | ReadLocalEnvironment next -> ReadLocalEnvironment(next >> f)
-    | InitGlobalDir next -> InitGlobalDir(next |> f)
-    | InitLocalDir next -> InitLocalDir(next |> f)
-    | UninstallGlobalDir next -> UninstallGlobalDir(next |> f)
-    | UninstallLocalDir next -> UninstallLocalDir(next |> f)
+    | InitGlobal next -> InitGlobal(next |> f)
+    | InitLocal next -> InitLocal(next |> f)
+    | UninstallGlobal next -> UninstallGlobal(next |> f)
+    | UninstallLocal next -> UninstallLocal(next |> f)
 
     let rec bind f = function
     | Free x -> x |> mapI (bind f) |> Free
@@ -66,120 +73,106 @@ module Environment =
 
     let readGlobalEnvironment = Free(ReadGlobalEnvironment Pure)
     let readLocalEnvironment = Free(ReadLocalEnvironment Pure)
-    let initGlobalDir = Free(InitGlobalDir(Pure()))
-    let initLocalDir = Free(InitLocalDir(Pure()))
-    let uninstallGlobalDir = Free(UninstallGlobalDir(Pure()))
-    let uninstallLocalDir = Free(UninstallLocalDir(Pure()))
+    let initGlobal = Free(InitGlobal(Pure()))
+    let initLocal = Free(InitLocal(Pure()))
+    let uninstallGlobal = Free(UninstallGlobal(Pure()))
+    let uninstallLocal = Free(UninstallLocal(Pure()))
 
 
     (*
         Interpreter
     *)
 
-    open System.IO
-    open FSharpPlus.Builders
-    open FSharpPlus.Operators
-
-    let private getGlobalEnv() =
+    let private getGlobalEnv () =
         monad {
-            let! userHome =
-                   Result.catch (fun () -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile)
-                   |> Result.mapError IoError
-
-            let! globalDir =
-                Result.catch
-                    (fun () ->
-                        let dir = Path.Combine(userHome, ".now\\")
-                        (dir, Directory.Exists dir)
-                    )
-               |> Result.mapError IoError
-               |> Result.filter snd (GlobalDirMissing)
-               |> Result.map fst
-
+            let! userHome = liftFs home
+            let globalDir = Path.Combine(userHome, ".now\\")
+            do! liftFs <| requireDir globalDir
             return {
                 globalDir = globalDir
+                database = Database ("now", globalDir)
             }
         }
 
-    let rec interpret = function
-    | Pure a -> Ok a
-    | Free(ReadGlobalEnvironment next) -> getGlobalEnv() |> Result.map next >>= interpret
-    | Free(ReadLocalEnvironment next) ->
+    let private getLocalEnv () =
         monad {
-            let! globalEnv = getGlobalEnv()
-
-            let! pwd = Result.catch (fun () -> System.Environment.CurrentDirectory) |> Result.mapError IoError
-
-            let! localDir =
-                Result.catch
-                    (fun () ->
-                        let dir = Path.Combine(pwd, ".now\\")
-                        (dir, Directory.Exists dir)
-                    )
-               |> Result.mapError IoError
-               |> Result.filter snd (LocalDirMissing)
-               |> Result.map fst
+            let! globalEnv = getGlobalEnv ()
+            let! pwd = liftFs pwd
+            let localDir = Path.Combine(pwd, ".now\\")
+            do! liftFs <| requireDir localDir
 
             return {
                 globalEnv = globalEnv
+                database = Database ("now", localDir)
                 localDir = localDir
             }
         }
-        |> Result.map next
-        >>= interpret
-    | Free(InitGlobalDir next) ->
+        
+    open FSharpPlus.Operators
+    
+    let rec interpret = function
+    | Pure a -> result a
+    | Free(ReadGlobalEnvironment next) -> getGlobalEnv () |> map next >>= interpret
+    | Free(ReadLocalEnvironment next) -> getLocalEnv () |> map next >>= interpret
+    | Free(InitGlobal next) ->
         monad {
-            let! userHome =
-               Result.catch (fun () -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile)
-               |> Result.mapError IoError
+            let! userHome = liftFs home
             let globalDir = Path.Combine(userHome, ".now\\")
-            let! exists = Result.catch (fun () -> Directory.Exists globalDir) |> Result.mapError IoError
-
-            if exists then
-                do! Error GlobalDirExists
-            else
-                do! Result.catch (fun () -> Directory.CreateDirectory globalDir |> ignore) |> Result.mapError IoError
+            do! liftFs <| mkdir globalDir
+            return!
+                execNonQuery
+                    (Database ("now", globalDir))
+                    ( Query
+                        ( """
+                          CREATE TABLE [MigrationHistory]
+                            ( [Id] GUID NOT NULL PRIMARY KEY
+                            , [Version] INT NOT NULL UNIQUE
+                            , [RunDate] DATETIMEOFFSET NOT NULL
+                            )
+                          """
+                        , []
+                        )
+                    )
+                |> liftSql
         }
-        |> Result.map (konst next)
+        |> map (konst next)
         >>= interpret
-    | Free(InitLocalDir next) ->
+    | Free(InitLocal next) ->
         monad {
-            let! pwd = Result.catch (fun () -> System.Environment.CurrentDirectory) |> Result.mapError IoError
+            let! pwd = liftFs pwd
             let localDir = Path.Combine(pwd, ".now\\")
-            let! exists = Result.catch (fun () -> Directory.Exists localDir) |> Result.mapError IoError
-
-            if exists then
-                return! Error LocalDirExists
-            else
-                return! Result.catch (fun () -> Directory.CreateDirectory localDir |> ignore) |> Result.mapError IoError
+            do! liftFs <| mkdir localDir
+            return!
+                execNonQuery
+                    (Database ("now", localDir))
+                    ( Query
+                        ( """
+                          CREATE TABLE [MigrationHistory]
+                            ( [Id] GUID NOT NULL PRIMARY KEY
+                            , [Version] INT NOT NULL UNIQUE
+                            , [RunDate] DATETIMEOFFSET NOT NULL
+                            )
+                          """
+                        , []
+                        )
+                    )
+                |> liftSql
         }
-        |> Result.map (konst next)
+        |> map (konst next)
         >>= interpret
-    | Free(UninstallGlobalDir next) ->
+    | Free(UninstallGlobal next) ->
         monad {
-            let! userHome =
-               Result.catch (fun () -> System.Environment.GetFolderPath System.Environment.SpecialFolder.UserProfile)
-               |> Result.mapError IoError
-            let globalDir = Path.Combine(userHome, ".now\\")
-            let! exists = Result.catch (fun () -> Directory.Exists globalDir) |> Result.mapError IoError
-
-            if exists then
-                do! Result.catch (fun () -> Directory.Delete(globalDir, true)) |> Result.mapError IoError
-            else
-                return ()
+            let! globalEnv = getGlobalEnv ()
+            do! liftSql <| Sql.drop globalEnv.database
+            do! liftFs <| rmdir globalEnv.globalDir
         }
-        |> Result.map (konst next)
+        |> map (konst next)
         >>= interpret
-    | Free(UninstallLocalDir next) ->
+    | Free(UninstallLocal next) ->
         monad {
-            let! pwd = Result.catch (fun () -> System.Environment.CurrentDirectory) |> Result.mapError IoError
-            let localDir = Path.Combine(pwd, ".now\\")
-            let! exists = Result.catch (fun () -> Directory.Exists localDir) |> Result.mapError IoError
-
-            if exists then
-                do! Result.catch (fun () -> Directory.Delete(localDir, true)) |> Result.mapError IoError
-            else
-                return ()
+            let! localEnv = getLocalEnv ()
+            do! liftSql <| Sql.drop localEnv.database
+            do! liftFs <| rmdir localEnv.localDir
         }
-        |> Result.map (konst next)
+        |> map (konst next)
         >>= interpret

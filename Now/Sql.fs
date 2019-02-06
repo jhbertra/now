@@ -15,6 +15,8 @@ type Database = Database of name : string * location : string
 type Parameter = string * obj
 type Query = string * Parameter list
 
+let param name value = (name, value :> obj)
+
 
 (*
     Error
@@ -32,17 +34,19 @@ type Error =
 
 
 type Instruction<'a> =
+    | RunInTransaction of Database * Sql<unit> * 'a
     | Drop of Database * 'a
     | ExecNonQuery of Database * Query * (int -> 'a)
     | ExecQuery of Database * Query * (SQLiteDataReader -> 'a)
 
 
-type Program<'a> =
-    | Free of Instruction<Program<'a>>
+and Sql<'a> =
+    | Free of Instruction<Sql<'a>>
     | Pure of 'a
 
 
 let private mapI f = function
+    | RunInTransaction(db, sql, next) -> RunInTransaction(db, sql, next |> f)
     | Drop(db, next) -> Drop(db, next |> f)
     | ExecNonQuery(db, query, next) -> ExecNonQuery(db, query, next >> f)
     | ExecQuery(db, query, next) -> ExecQuery(db, query, next >> f)
@@ -56,7 +60,7 @@ let rec bind f = function
 let map f = bind (f >> Pure)
 
 
-type Program<'a> with
+type Sql<'a> with
     
     static member Return x = Pure x
 
@@ -81,7 +85,8 @@ let private getConnection db =
         | Some (c : SQLiteConnection) ->
             return! lift <| Ok c
         | None ->
-            let c = new SQLiteConnection(getDbFile db)
+            let c = new SQLiteConnection(sprintf "Data Source=%s;Version=3;" (getDbFile db))
+            c.Open()
             do! Map.add db c connections |> put |> StateT.hoist
             return! lift <| Ok c
     }
@@ -95,8 +100,24 @@ let private prepareCommand (text, parameters) (connection : SQLiteConnection) =
     command
 
 
-let rec private interpret' = function
+let rec private interpret'<'a> : Sql<'a> -> StateT<Map<Database, SQLiteConnection>, Result<'a * Map<Database, SQLiteConnection>, Error>> = function
     | Pure a -> lift (Ok a)
+
+    | Free(RunInTransaction(db, sql, next)) ->
+        getConnection db
+        >>= ( fun (connection : SQLiteConnection) ->
+                use transaction = connection.BeginTransaction()
+                try
+                    let x = interpret' sql
+                    transaction.Commit()
+                    x
+                with
+                | e ->
+                    transaction.Rollback()
+                    raise e
+            )
+        |> map (konst next)
+        >>= interpret'
 
     | Free(Drop(db, next)) ->
         let x =
@@ -146,6 +167,16 @@ let interpret program =
 *)
 
 
+let runInTransaction db sql = RunInTransaction(db, sql, Pure ()) |> Free
 let drop db = Drop(db, Pure()) |> Free
 let execNonQuery db query = ExecNonQuery(db, query, Pure) |> Free
 let execQuery db query = ExecQuery(db, query, Pure) |> Free
+let mapReader<'a> f (sql : Sql<SQLiteDataReader>) : Sql<'a list> =
+    map
+        ( fun (reader : SQLiteDataReader) ->
+            let mutable results = []
+            while reader.Read() do
+                results <- (f reader)::results
+            results
+        )
+        sql

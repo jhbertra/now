@@ -39,12 +39,13 @@ type Instruction<'a> =
     | Mv of File * string * 'a
     | Pwd of (string -> 'a)
     | Read of string * (string -> 'a)
+    | Require of File * 'a
     | Rm of File * 'a
     | Write of string * string * 'a
 
 
-type Program<'a> =
-    | Free of Instruction<Program<'a>>
+type Fs<'a> =
+    | Free of Instruction<Fs<'a>>
     | Pure of 'a
 
 
@@ -56,6 +57,7 @@ let private mapI f = function
     | Mv(file, dest, next) -> Mv(file, dest, next |> f)
     | Pwd next -> Pwd(next >> f)
     | Read(path, next) -> Read(path, next >> f)
+    | Require (file, next) -> Require(file, next |> f)
     | Rm(file, next) -> Rm(file, next |> f)
     | Write(path, content, next) -> Write(path, content, next |> f)
 
@@ -68,7 +70,7 @@ let rec bind f = function
 let map f = bind (f >> Pure)
 
 
-type Program<'a> with
+type Fs<'a> with
     
     static member Return x = Pure x
 
@@ -188,11 +190,27 @@ let rec private interpret' = function
         |> Result.map next
         >>= interpret'
 
+    | Free(Require((Directory, path), next)) ->
+        if IO.Directory.Exists path |> not then
+            NotFound (Directory, path) |> Error
+        else
+            Ok ()
+        |> Result.map (konst next)
+        >>= interpret'
+
+    | Free(Require((File, path), next)) ->
+        if IO.File.Exists path |> not then
+            NotFound (File, path) |> Error
+        else
+            Ok ()
+        |> Result.map (konst next)
+        >>= interpret'
+
     | Free(Rm((Directory, path), next)) ->
         if IO.Directory.Exists path |> not then
             NotFound (Directory, path) |> Error
         else
-            IO.Directory.Delete path
+            IO.Directory.Delete(path, true)
             Ok ()
         |> Result.map (konst next)
         >>= interpret'
@@ -241,6 +259,9 @@ let mvdir name dest = Mv((Directory, name), dest, Pure ()) |> Free
 let mvfile name dest = Mv((File, name), dest, Pure ()) |> Free
 let pwd = Pwd Pure |> Free
 let read path = Read(path, Pure) |> Free
+let require file = Require(file, Pure ()) |> Free
+let requireDir name = Require((Directory, name), Pure ()) |> Free
+let requireRile name = Require((File, name), Pure ()) |> Free
 let rm file = Rm(file, Pure ()) |> Free
 let rmdir name = Rm((Directory, name), Pure ()) |> Free
 let rmfile name = Rm((File, name), Pure ()) |> Free

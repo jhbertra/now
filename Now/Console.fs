@@ -1,4 +1,4 @@
-module Now.CommandLine
+module Now.Console
 
 
 (*
@@ -12,8 +12,8 @@ type Instruction<'a> =
     | WriteLine of string * 'a
 
 
-type Program<'a> =
-    | Free of Instruction<Program<'a>>
+type Console<'a> =
+    | Free of Instruction<Console<'a>>
     | Pure of 'a
 
 
@@ -31,7 +31,7 @@ let rec bind f = function
 let map f = bind (f >> Pure)
 
 
-type Program<'a> with
+type Console<'a> with
     
     static member Return x = Pure x
 
