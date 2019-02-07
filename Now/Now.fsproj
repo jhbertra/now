@@ -5,12 +5,14 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Result.fs" />
+    <Compile Include="Option.fs" />
     <Compile Include="Console.fs" />
     <Compile Include="Fs.fs" />
     <Compile Include="Sql.fs" />
     <Compile Include="Eff.fs" />
     <Compile Include="Environment.fs" />
     <Compile Include="Migration.fs" />
+    <Compile Include="Task.fs" />
     <Compile Include="Migrations/*.fs" />
     <Compile Include="Now.fs" />
     <Compile Include="Main.fs" />

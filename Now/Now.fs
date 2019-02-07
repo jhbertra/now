@@ -28,6 +28,7 @@ module Now =
         | FileError of Fs.Error
         | SqlError of Sql.Error
         | CommandLineInvalid
+        | TaskError of Task.Error
         | EnvironmentError of Environment.Error
         | MigrationError of Migration.Error
 
@@ -36,6 +37,7 @@ module Now =
     *)
 
     type NowInstruction<'a> =
+        | RunTask of Task.Program<'a>
         | RunMigration of Migration.Program<'a>
         | RunEnvironment of Environment.Program<'a>
         | RunResult of Result<'a, Error>
@@ -45,6 +47,7 @@ module Now =
         | Pure of 'a
 
     let mapI f = function
+        | RunTask x -> RunTask (map f x)
         | RunMigration x -> RunMigration (map f x)
         | RunEnvironment x -> RunEnvironment (map f x)
         | RunResult x -> RunResult (map f x)
@@ -59,6 +62,7 @@ module Now =
 
         static member (>>=) (x, f) = bind f x
 
+    let liftTsk x = RunTask x |> mapI Pure |> Free
     let liftMig x = RunMigration x |> mapI Pure |> Free
     let liftEnv x = RunEnvironment x |> mapI Pure |> Free
     let liftRes x = RunResult x |> mapI Pure |> Free
@@ -69,6 +73,7 @@ module Now =
 
     let rec interpret = function
         | Pure a -> result a
+        | Free (RunTask x) -> Task.interpret x |> Eff.mapError TaskError >>= interpret
         | Free (RunMigration x) -> Migration.interpret x |> Eff.mapError MigrationError >>= interpret
         | Free (RunEnvironment x) -> Environment.interpret x |> Eff.mapError EnvironmentError >>= interpret
         | Free (RunResult x) -> Eff.liftRes x >>= interpret
@@ -76,21 +81,39 @@ module Now =
     (*
         Public API
     *)
+    
+    let (|Param|_|) = function
+        | [p : string] when (p.StartsWith("-")) |> not -> Some p
+        | _ -> None
+    
+    let (|Flag|_|) flag = function
+        | p::opts when opts |> List.contains (sprintf "-%s" flag) -> Some p
+        | _ -> None
+    
+    let (|Opt|_|) opt = function
+        | p::opts ->
+            opts
+            |> List.skipWhile (fun x -> x <> (sprintf "-%s" opt))
+            |> List.filter (fun s -> s.StartsWith("-") |> not)
+            |> List.tryHead
+            |> Option.map (tuple2 p)
+        | _ -> None
+    
+    let hasFlag flag = List.contains flag
+    //let hasOption opt = 
 
-//    let parseTask = function
-//    | [] -> Ok (WithLocalMigrations GetTasks)
-//    | ["create"; name] when (name.StartsWith("-")) |> not -> Ok (WithLocalMigrations (CreateTask name))
-//    | ["delete"; name] when (name.StartsWith("-")) |> not -> Ok (WithLocalMigrations (DeleteTask name))
-//    | ["rename"; oldName; newName] when
-//        (oldName.StartsWith("-")) |> not && (newName.StartsWith("-")) |> not ->
-//            Ok (WithLocalMigrations (RenameTask (oldName, newName)))
+    let parseTask = function
+    | [] -> Ok (WithLocalMigrations GetTasks)
+    | Param name -> Ok (WithLocalMigrations (CreateTask name))
+    | Flag "d" name -> Ok (WithLocalMigrations (DeleteTask name))
+    | Opt "m" (oldName, newName) -> Ok  (WithLocalMigrations (RenameTask (oldName, newName)))
 //    | ["start"; name] when (name.StartsWith("-")) |> not -> Ok (WithLocalMigrations (StartTask name))
-//    | _ -> Error TaskCommandInvalid
+    | _ -> Error CommandLineInvalid
 
     let parseCommand = function
     | "init" :: opts when opts |> List.contains "-g" -> Ok InitGlobal
     | "init" :: opts -> Ok InitLocal
-//    | "task" :: opts -> parseTask opts
+    | "task" :: opts -> parseTask opts
     | "uninstall" :: opts when opts |> List.contains "-g" -> Ok UninstallGlobal
     | "uninstall" :: opts -> Ok UninstallLocal
     | "version" :: opts when opts |> List.contains "-g" -> WithGlobalMigrations VersionGlobal |> Ok
@@ -115,52 +138,38 @@ module Now =
 //    | MigrationError (Migration.MigrationSequenceInvalid version) -> sprintf "Unexpected migration version: %A" version
 //    | MigrationError (Migration.MigrationFailed (version, e)) -> sprintf "Error running migration %A: %s" version e.Message
     
+    open Now.Task
     open Now.Environment
     open Now.Migration
-    open Now.Console
     open FSharpPlus.Builders
 
     let runCommandPostMigrations = function
-//    | RunMigrationsCommand.CreateTask name ->
-//        monad {
-//            let! env = liftEnv readLocalEnvironment
-//            let! task = liftTsk <| getTask env name
-//            if Option.isSome task then
-//                return! liftRes <| Error (TaskExists name)
-//            else
-//                do! liftTsk <| createTask env name
-//        }
-//    | RunMigrationsCommand.DeleteTask name ->
-//        monad {
-//            let! env = liftEnv readLocalEnvironment
-//            let! task = liftTsk <| getTask env name
-//            if Option.isNone task then
-//                return! liftRes <| Error (TaskNotFound name)
-//            else
-//                do! liftTsk <| deleteTask env name
-//        }
-//    | RunMigrationsCommand.RenameTask (oldName, newName) ->
-//        monad {
-//            let! env = liftEnv readLocalEnvironment
-//            let! task = liftTsk <| getTask env oldName
-//            let! newTask = liftTsk <| getTask env newName
-//            if Option.isNone task then
-//                return! liftRes <| Error (TaskNotFound oldName)
-//            elif Option.isSome newTask then
-//                return! liftRes <| Error (TaskExists newName)
-//            else
-//                do! liftTsk <| renameTask env oldName newName
-//        }
-//    | RunMigrationsCommand.GetTasks ->
-//        monad {
-//            let! env = liftEnv readLocalEnvironment
-//            let! tasks = liftTsk <| getTasks env
-//            if List.isEmpty tasks then
-//                do! liftCL <| writeLine "No current tasks, to create one run 'now task <name>'"
-//            else
-//                for task in tasks do
-//                    do! liftCL <| writeLine task.name
-//        }
+    | RunMigrationsCommand.CreateTask name ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            return! liftTsk <| createTask env name
+        }
+    | RunMigrationsCommand.DeleteTask name ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            return! liftTsk <| deleteTask env name
+        }
+    | RunMigrationsCommand.RenameTask (oldName, newName) ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            return! liftTsk <| renameTask env oldName newName
+        }
+    | RunMigrationsCommand.GetTasks ->
+        monad {
+            let! env = liftEnv readLocalEnvironment
+            let! tasks = liftTsk <| getTasks env
+            if List.isEmpty tasks then
+                printfn "No current tasks, to create one run 'now task <name>'"
+            else
+                for task in tasks do
+                    printfn "%s" task.name
+            return ()
+        }
     | VersionGlobal ->
         monad {
             let! env = liftEnv readGlobalEnvironment
