@@ -180,7 +180,7 @@ module Migration =
             | Some x -> do! liftRes <| Error (MigrationSequenceInvalid x)
             | None -> return ()
             
-            let! currentVersion = liftSql <| getMigrationVersion db
+            let! currentVersion = liftSql <| getMigrationVersion db |> mapError SqlError
                 
             match currentVersion with
             | Some v when migrations |> map migrationVersion |> List.contains v |> not ->
@@ -192,20 +192,26 @@ module Migration =
                 |> List.filter (fun x -> version (migrationVersion x) > (currentVersion |> Option.map version |> Option.defaultValue 0))
                 |> runMigrationsBody db
                 
-            do! liftSql migrationsSql
+            do! liftSql migrationsSql |> mapError SqlError
         }
     
     let rec interpret = function
         | Pure a -> result a
+
         | Free(GetGlobalMigrationHistory(env, next)) ->
-            getMigrationHistory env.database |> liftSql |> map next >>= interpret
+            getMigrationHistory env.database |> liftSql |> mapError SqlError |> map next >>= interpret
+
         | Free(GetLocalMigrationHistory(env, next)) ->
-            getMigrationHistory env.database |> liftSql |> map next >>= interpret
+            getMigrationHistory env.database |> liftSql |> mapError SqlError |> map next >>= interpret
+
         | Free(GetGlobalMigrationVersion(env, next)) ->
-            getMigrationVersion env.database |> liftSql |> map next >>= interpret
+            getMigrationVersion env.database |> liftSql |> mapError SqlError |> map next >>= interpret
+
         | Free(GetLocalMigrationVersion(env, next)) ->
-            getMigrationVersion env.database |> liftSql |> map next >>= interpret
+            getMigrationVersion env.database |> liftSql |> mapError SqlError |> map next >>= interpret
+
         | Free(RunGlobalMigrations(env, migrations, next)) ->
             runMigrations env.database migrations |> map (konst next) >>= interpret
+
         | Free(RunLocalMigrations(env, migrations, next)) ->
             runMigrations env.database migrations |> map (konst next) >>= interpret

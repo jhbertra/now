@@ -30,7 +30,8 @@ module Environment =
     *)
 
     type Error =
-    | IoError of exn
+    | FileError of Fs.Error
+    | SqlError of Sql.Error
     | GlobalDirExists
     | GlobalDirMissing
     | LocalDirExists
@@ -68,7 +69,9 @@ module Environment =
     let map f = bind (f >> Pure)
 
     type Program<'a> with
+
         static member Return x = Pure x
+
         static member (>>=) (x, f) = bind f x
 
     let readGlobalEnvironment = Free(ReadGlobalEnvironment Pure)
@@ -82,12 +85,14 @@ module Environment =
     (*
         Interpreter
     *)
+        
+    open FSharpPlus.Operators
 
     let private getGlobalEnv () =
         monad {
-            let! userHome = liftFs home
+            let! userHome = liftFs home |> mapError FileError
             let globalDir = Path.Combine(userHome, ".now\\")
-            do! liftFs <| requireDir globalDir
+            do! (liftFs <| requireDir globalDir) |> mapError (konst GlobalDirMissing)
             return {
                 globalDir = globalDir
                 database = Database ("now", globalDir)
@@ -97,9 +102,9 @@ module Environment =
     let private getLocalEnv () =
         monad {
             let! globalEnv = getGlobalEnv ()
-            let! pwd = liftFs pwd
+            let! pwd = liftFs pwd |> mapError FileError
             let localDir = Path.Combine(pwd, ".now\\")
-            do! liftFs <| requireDir localDir
+            do! (liftFs <| requireDir localDir) |> mapError (konst LocalDirMissing)
 
             return {
                 globalEnv = globalEnv
@@ -107,8 +112,6 @@ module Environment =
                 localDir = localDir
             }
         }
-        
-    open FSharpPlus.Operators
     
     let rec interpret = function
     | Pure a -> result a
@@ -116,9 +119,9 @@ module Environment =
     | Free(ReadLocalEnvironment next) -> getLocalEnv () |> map next >>= interpret
     | Free(InitGlobal next) ->
         monad {
-            let! userHome = liftFs home
+            let! userHome = liftFs home |> mapError FileError
             let globalDir = Path.Combine(userHome, ".now\\")
-            do! liftFs <| mkdir globalDir
+            do! (liftFs <| mkdir globalDir) |> mapError (konst GlobalDirExists)
             return!
                 execNonQuery
                     (Database ("now", globalDir))
@@ -134,14 +137,15 @@ module Environment =
                         )
                     )
                 |> liftSql
+                |> mapError SqlError
         }
         |> map (konst next)
         >>= interpret
     | Free(InitLocal next) ->
         monad {
-            let! pwd = liftFs pwd
+            let! pwd = liftFs pwd |> mapError FileError
             let localDir = Path.Combine(pwd, ".now\\")
-            do! liftFs <| mkdir localDir
+            do! (liftFs <| mkdir localDir) |> mapError (konst LocalDirExists)
             return!
                 execNonQuery
                     (Database ("now", localDir))
@@ -157,22 +161,23 @@ module Environment =
                         )
                     )
                 |> liftSql
+                |> mapError SqlError
         }
         |> map (konst next)
         >>= interpret
     | Free(UninstallGlobal next) ->
         monad {
             let! globalEnv = getGlobalEnv ()
-            do! liftSql <| Sql.drop globalEnv.database
-            do! liftFs <| rmdir globalEnv.globalDir
+            do! liftSql <| Sql.drop globalEnv.database |> mapError SqlError
+            do! (liftFs <| rmdir globalEnv.globalDir) |> mapError (konst GlobalDirMissing)
         }
         |> map (konst next)
         >>= interpret
     | Free(UninstallLocal next) ->
         monad {
             let! localEnv = getLocalEnv ()
-            do! liftSql <| Sql.drop localEnv.database
-            do! liftFs <| rmdir localEnv.localDir
+            do! liftSql <| Sql.drop localEnv.database |> mapError SqlError
+            do! (liftFs <| rmdir localEnv.localDir) |> mapError (konst LocalDirMissing)
         }
         |> map (konst next)
         >>= interpret

@@ -1,5 +1,6 @@
 ﻿namespace Now
 
+open FSharpPlus.Operators
 
 module Now =
 
@@ -8,50 +9,49 @@ module Now =
     *)
 
     type RunMigrationsCommand =
-    | GetTasks
-    | CreateTask of string
-    | RenameTask of string * string
-    | DeleteTask of string
-    | VersionGlobal
-    | VersionLocal
+        | GetTasks
+        | CreateTask of string
+        | RenameTask of string * string
+        | DeleteTask of string
+        | VersionGlobal
+        | VersionLocal
 
     type Command =
-    | InitGlobal
-    | InitLocal
-    | UninstallGlobal
-    | UninstallLocal
-    | WithGlobalMigrations of RunMigrationsCommand
-    | WithLocalMigrations of RunMigrationsCommand
+        | InitGlobal
+        | InitLocal
+        | UninstallGlobal
+        | UninstallLocal
+        | WithGlobalMigrations of RunMigrationsCommand
+        | WithLocalMigrations of RunMigrationsCommand
 
     type Error =
-    | FileError of Fs.Error
-    | SqlError of Sql.Error
-    | CommandLineInvalid
-    | EnvironmentError of Environment.Error
-    | MigrationError of Migration.Error
-    
-    let unwrapEffErrpr = function
-    | Eff.FileError e -> FileError e
-    | Eff.SqlError e -> SqlError e
-    | Eff.UserError e -> e
+        | FileError of Fs.Error
+        | SqlError of Sql.Error
+        | CommandLineInvalid
+        | EnvironmentError of Environment.Error
+        | MigrationError of Migration.Error
 
     (*
         DSL
     *)
 
-    type NowT<'a> =
-    | Run of Migration.Program<Environment.Program<Result<'a, Error>>>
+    type NowInstruction<'a> =
+        | RunMigration of Migration.Program<'a>
+        | RunEnvironment of Environment.Program<'a>
+        | RunResult of Result<'a, Error>
 
     type Program<'a> =
-    | Free of NowT<Program<'a>>
-    | Pure of 'a
+        | Free of NowInstruction<Program<'a>>
+        | Pure of 'a
 
-    let mapStack f = (Migration.map (Environment.map (Result.map f)))
-    let mapT f (Run p) = mapStack f p |> Run
+    let mapI f = function
+        | RunMigration x -> RunMigration (map f x)
+        | RunEnvironment x -> RunEnvironment (map f x)
+        | RunResult x -> RunResult (map f x)
 
     let rec bind f = function
-    | Free x -> x |> mapT (bind f) |> Free
-    | Pure x -> f x
+        | Free x -> x |> mapI (bind f) |> Free
+        | Pure x -> f x
 
     type Program<'a> with
 
@@ -59,25 +59,19 @@ module Now =
 
         static member (>>=) (x, f) = bind f x
 
-    let wrap x = x |> Run |> mapT Pure |> Free
-    let liftDat x = wrap <| Migration.map (Environment.Pure << Ok) x
-    let liftEnv x = wrap <| Migration.Pure (Environment.map Ok x)
-    let liftRes x = wrap <| Migration.Pure (Environment.Pure x)
+    let liftMig x = RunMigration x |> mapI Pure |> Free
+    let liftEnv x = RunEnvironment x |> mapI Pure |> Free
+    let liftRes x = RunResult x |> mapI Pure |> Free
 
     (*
         Interpreter
     *)
 
-    open FSharpPlus.Operators
-
     let rec interpret = function
-    | Pure a -> result a
-    | Free(Run p) ->
-        p
-        |> (Migration.interpret >> Eff.mapError MigrationError)
-        >>= (Environment.interpret >> Eff.mapError EnvironmentError)
-        >>= Eff.liftRes
-        >>= interpret
+        | Pure a -> result a
+        | Free (RunMigration x) -> Migration.interpret x |> Eff.mapError MigrationError >>= interpret
+        | Free (RunEnvironment x) -> Environment.interpret x |> Eff.mapError EnvironmentError >>= interpret
+        | Free (RunResult x) -> Eff.liftRes x >>= interpret
 
     (*
         Public API
@@ -103,7 +97,7 @@ module Now =
     | "version" :: opts -> WithLocalMigrations VersionLocal |> Ok
     | _ -> Error CommandLineInvalid
 
-    let renderEnvironmentError a = sprintf "%A" a
+    let renderError a = sprintf "%A" a
 
 //    let renderEnvironmentError = function
 //    | CommandLineInvalid -> "Command Line Invalid"
@@ -170,7 +164,7 @@ module Now =
     | VersionGlobal ->
         monad {
             let! env = liftEnv readGlobalEnvironment
-            let! globalVersion = liftDat <| getGlobalMigrationVersion env
+            let! globalVersion = liftMig <| getGlobalMigrationVersion env
             match globalVersion with
             | Some (MigrationVersion (id, version)) -> 
                 printfn "Database Version: %d.%s" version (id.ToString())
@@ -180,8 +174,8 @@ module Now =
     | VersionLocal ->
         monad {
             let! env = liftEnv readLocalEnvironment
-            let! globalVersion = liftDat <| getGlobalMigrationVersion env.globalEnv
-            let! localVersion = liftDat <| getLocalMigrationVersion env
+            let! globalVersion = liftMig <| getGlobalMigrationVersion env.globalEnv
+            let! localVersion = liftMig <| getLocalMigrationVersion env
             match globalVersion with
             | Some (MigrationVersion (id, version)) -> 
                 printfn "Global database Version: %d.%s" version (id.ToString())
@@ -204,13 +198,13 @@ module Now =
     | WithGlobalMigrations cmd ->
         monad {
             let! env = liftEnv readGlobalEnvironment
-            do! liftDat <| runGlobalMigrations env []
+            do! liftMig <| runGlobalMigrations env []
             return! runCommandPostMigrations cmd
         }
     | WithLocalMigrations cmd ->
         monad {
             let! env = liftEnv readLocalEnvironment
-            do! liftDat
+            do! liftMig
                 <| runLocalMigrations
                     env
                     [
