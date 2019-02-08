@@ -1,6 +1,7 @@
 namespace Now
 
 open System
+open Fs
 open Sql
 open Eff
 
@@ -17,30 +18,39 @@ type Action =
 type Task = {
     id : int
     name : string
- }
+}
 
 
 module Task =
-    
+
+    let create id name = { id = id; name = name }
+
     (*
         Error
     *)
 
     type Error =
-    | SqlError of Sql.Error
-    | TaskExists of string
-    | TaskNotFound of string
+        | SqlError of Sql.Error
+        | FileError of Fs.Error
+        | TaskExists of string
+        | TaskNotFound of string
+        | ActiveTaskIdNotFound of string
+        | ActiveTaskExists
+        | ActiveTaskNotFound
+        | DeleteActiveTask of string
 
     (*
         DSL
     *)
 
     type Instruction<'a> =
-        | CreateTask of LocalEnvironment * string * 'a
-        | DeleteTask of LocalEnvironment * string * 'a
-        | GetTask of LocalEnvironment * string * (Task -> 'a)
-        | GetTasks of LocalEnvironment * (Task list -> 'a)
-        | RenameTask of LocalEnvironment * string * string * 'a
+        | CreateTask of Env * string * 'a
+        | DeleteTask of Env * string * 'a
+        | GetActiveTask of Env * (Task option -> 'a)
+        | SetActiveTask of Env * Task option * 'a
+        | GetTask of Env * string * (Task -> 'a)
+        | GetTasks of Env * (Task list -> 'a)
+        | RenameTask of Env * string * string * 'a
 
     type Program<'a> =
         | Free of Instruction<Program<'a>>
@@ -49,9 +59,11 @@ module Task =
     let private mapI f = function
         | CreateTask(env, name, next) -> CreateTask(env, name, next |> f)
         | DeleteTask(env, name, next) -> DeleteTask(env, name, next |> f)
+        | GetActiveTask(env, next) -> GetActiveTask(env, next >> f)
         | GetTask(env, name, next) -> GetTask(env, name, next >> f)
         | GetTasks(env, next) -> GetTasks(env, next >> f)
         | RenameTask(env, oldName, newName , next) -> RenameTask(env, oldName, newName , next |> f)
+        | SetActiveTask(env, task, next) -> SetActiveTask(env, task, next |> f)
 
     let rec bind f = function
         | Free x -> x |> mapI (bind f) |> Free
@@ -67,6 +79,8 @@ module Task =
 
     let createTask env name = Free(CreateTask(env, name, Pure()))
     let deleteTask env name = Free(DeleteTask(env, name, Pure()))
+    let getActiveTask env = Free(GetActiveTask(env, Pure))
+    let setActiveTask env task = Free(SetActiveTask(env, task, Pure()))
     let getTask env name = Free(GetTask(env, name, Pure))
     let getTasks env = Free(GetTasks(env, Pure))
     let renameTask env oldName newName = Free(RenameTask(env, oldName, newName, Pure()))
@@ -82,6 +96,9 @@ module Task =
     *)
     open FSharpPlus.Builders
     open FSharpPlus.Operators
+    
+    let liftSql' sql = liftSql sql |> mapError SqlError
+    let liftFs' fs = liftFs fs |> mapError FileError
     
     let private getTaskSql db name =
         execQuery
@@ -99,9 +116,42 @@ module Task =
                 )
             )
         |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
-        |> liftSql
         |> map tryHead
-        |> mapError SqlError
+        |> liftSql'
+    
+    let private getTaskByIdSql db id =
+        execQuery
+            db
+            ( Query
+                ( """
+                  SELECT
+                      [Task].[Name]
+                    , [Task].[Id]
+                  FROM [Task]
+                  WHERE [Task].[Id] = @id
+                  LIMIT 1
+                  """
+                , [ param "@id" id ]
+                )
+            )
+        |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
+        |> map tryHead
+        |> liftSql'
+
+    let getActiveTaskFile { rootDir = rootDir } = IO.Path.Combine(rootDir, ".activetask")
+
+    let getActiveTaskImpl env =
+        monad {
+            let! fileExists = liftFs' <| Fs.exists (getActiveTaskFile env)
+            if fileExists then
+                let! taskfile = liftFs' <| read (getActiveTaskFile env)
+                let! task = getTaskByIdSql env.database (Int32.Parse taskfile)
+                match task with
+                | Some t -> return Some t
+                | None -> return! ActiveTaskIdNotFound taskfile |> Error |> liftRes
+            else
+                return None
+        }
 
     let rec interpret = function
         | Pure a -> result a
@@ -123,8 +173,7 @@ module Task =
                                 , [ param "@name" name ]
                                 )
                             )
-                        |> liftSql
-                        |> mapError SqlError
+                        |> liftSql'
             }
             |> map (konst next)
             >>= interpret
@@ -132,9 +181,13 @@ module Task =
         | Free(DeleteTask(env, name, next)) ->
             monad {
                 let! task = getTaskSql env.database name
-                if Option.isNone task then
+                let! activeTask = getActiveTaskImpl env
+                match (task, activeTask) with
+                | Some t, Some active when t.id = active.id ->
+                    return! DeleteActiveTask t.name |> Error |> liftRes
+                | None, _->
                     return! TaskNotFound name |> Error |> liftRes
-                else
+                | Some t, _ ->
                     return!
                         execNonQuery
                             env.database
@@ -146,8 +199,34 @@ module Task =
                                 , [ param "@name" name ]
                                 )
                             )
-                        |> liftSql
-                        |> mapError SqlError
+                        |> liftSql'
+            }
+            |> map (konst next)
+            >>= interpret
+    
+        | Free(GetActiveTask(env, next)) -> getActiveTaskImpl env |> map next >>= interpret
+    
+        | Free(SetActiveTask(env, Some task, next)) ->
+            monad {
+                let file = getActiveTaskFile env
+                let! fileExists = liftFs' <| Fs.exists file
+                if fileExists then
+                    return! liftRes <| Error ActiveTaskExists
+                else
+                    do! liftFs' <| mkfile file
+                    do! liftFs' <| write file (sprintf "%d" task.id)
+            }
+            |> map (konst next)
+            >>= interpret
+    
+        | Free(SetActiveTask(env, None, next)) ->
+            monad {
+                let file = getActiveTaskFile env
+                let! fileExists = liftFs' <| Fs.exists file
+                if fileExists then
+                    do! liftFs' <| rmfile file
+                else
+                    return! liftRes <| Error ActiveTaskNotFound
             }
             |> map (konst next)
             >>= interpret
@@ -177,8 +256,7 @@ module Task =
                     )
                 )
             |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
-            |> liftSql
-            |> mapError SqlError
+            |> liftSql'
             |> map next
             >>= interpret
     
@@ -207,8 +285,7 @@ module Task =
                                   ]
                                 )
                             )
-                        |> liftSql
-                        |> mapError SqlError
+                        |> liftSql'
             }
             |> map (konst next)
             >>= interpret

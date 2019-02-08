@@ -1,4 +1,4 @@
-module Now.Migrations.Local1_AddTask
+module Now.Migrations.Now1_AddTask
 
 open FSharpPlus
 open Now.Sql

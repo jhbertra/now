@@ -34,6 +34,7 @@ type Error =
 type Instruction<'a> =
     | Append of string * string * 'a
     | Cp of File * string * 'a
+    | Ex of string * (bool -> 'a)
     | Home of (string -> 'a)
     | Mk of File * 'a
     | Mv of File * string * 'a
@@ -52,6 +53,7 @@ type Fs<'a> =
 let private mapI f = function
     | Append(path, content, next) -> Append(path, content, next |> f)
     | Cp(file, dest, next) -> Cp(file, dest, next |> f)
+    | Ex (path, next) -> Ex(path, next >> f)
     | Home next -> Home(next >> f)
     | Mk(file, next) -> Mk(file, next |> f)
     | Mv(file, dest, next) -> Mv(file, dest, next |> f)
@@ -131,6 +133,8 @@ let rec private interpret' = function
         |> Result.map (konst next)
         >>= interpret'
 
+    | Free(Ex(path, next)) -> IO.File.Exists path |> next |> interpret'
+
     | Free(Home next) ->
         Environment.SpecialFolder.UserProfile
         |> Environment.GetFolderPath
@@ -150,7 +154,8 @@ let rec private interpret' = function
         if IO.File.Exists path then
             Exists (File, path) |> Error
         else
-            IO.File.Create path |> ignore
+            let fs = IO.File.Create path
+            fs.Close()
             Ok ()
         |> Result.map (konst next)
         >>= interpret'
@@ -183,7 +188,7 @@ let rec private interpret' = function
         |> interpret'
 
     | Free(Read(path, next)) ->
-        if IO.Directory.Exists path |> not then
+        if IO.File.Exists path |> not then
             NotFound (File, path) |> Error
         else                
             IO.File.ReadAllText path |> Ok
@@ -225,7 +230,7 @@ let rec private interpret' = function
         >>= interpret'
 
     | Free(Write(path, content, next)) ->
-        if IO.Directory.Exists path |> not then
+        if IO.File.Exists path |> not then
             NotFound (File, path) |> Error
         else                
             IO.File.WriteAllText(path, content)
@@ -250,6 +255,7 @@ let append path content = Append(path, content, Pure ()) |> Free
 let cp file dest = Cp(file, dest, Pure ()) |> Free
 let cpdir name dest = Cp((Directory, name), dest, Pure ()) |> Free
 let cpfile name dest = Cp((File, name), dest, Pure ()) |> Free
+let exists path = Ex(path, Pure) |> Free
 let home = Home Pure |> Free
 let mk file = Mk(file, Pure ()) |> Free
 let mkdir name = Mk((Directory, name), Pure ()) |> Free
@@ -265,4 +271,4 @@ let requireRile name = Require((File, name), Pure ()) |> Free
 let rm file = Rm(file, Pure ()) |> Free
 let rmdir name = Rm((Directory, name), Pure ()) |> Free
 let rmfile name = Rm((File, name), Pure ()) |> Free
-let write path content = Write(path, content, Pure ())
+let write path content = Write(path, content, Pure ()) |> Free
