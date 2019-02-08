@@ -14,6 +14,7 @@ module Now =
         | GetTasks
         | RenameTask of string * string
         | StartTask of string
+        | StopTask
         | Status
         | Version
 
@@ -132,6 +133,7 @@ module Now =
     let parseCommand = function
         | Command "install" Nil -> Ok Install
         | Command "start" (Arg name) -> StartTask name |> WithMigrations |> Ok
+        | Command "stop" Nil -> StopTask |> WithMigrations |> Ok
         | Command "task" opts -> parseTask opts
         | Command "uninstall" Nil -> Ok Uninstall
         | Command "version" Nil -> WithMigrations Version |> Ok
@@ -186,6 +188,15 @@ module Now =
                     do! liftTsk <| setActiveTask env None
                 
                 do! liftTsk <| setActiveTask env (Some task)
+            }
+        | RunMigrationsCommand.StopTask ->
+            monad {
+                let! activeTask = liftTsk <| getActiveTask env
+                
+                if Option.isNone activeTask then
+                    do! liftCon <| writeLine " Nothing in progress."
+                
+                do! liftTsk <| setActiveTask env None
             }
         | Status ->
             monad {
