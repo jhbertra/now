@@ -9,11 +9,12 @@ module Now =
     *)
 
     type RunMigrationsCommand =
-        | GetTasks
         | CreateTask of string
-        | StartTask of string
-        | RenameTask of string * string
         | DeleteTask of string
+        | GetTasks
+        | RenameTask of string * string
+        | StartTask of string
+        | Status
         | Version
 
     type Command =
@@ -134,6 +135,7 @@ module Now =
         | Command "task" opts -> parseTask opts
         | Command "uninstall" Nil -> Ok Uninstall
         | Command "version" Nil -> WithMigrations Version |> Ok
+        | Command "status" Nil -> WithMigrations Status |> Ok
         | _ -> Error CommandLineInvalid
 
     let renderError a = sprintf "%A" a
@@ -161,25 +163,12 @@ module Now =
     open Now.Migrations
     open FSharpPlus.Builders
 
-    let runCommandPostMigrations = function
-        | RunMigrationsCommand.CreateTask name ->
-            monad {
-                let! env = liftEnv readEnv
-                return! liftTsk <| createTask env name
-            }
-        | RunMigrationsCommand.DeleteTask name ->
-            monad {
-                let! env = liftEnv readEnv
-                return! liftTsk <| deleteTask env name
-            }
-        | RunMigrationsCommand.RenameTask (oldName, newName) ->
-            monad {
-                let! env = liftEnv readEnv
-                return! liftTsk <| renameTask env oldName newName
-            }
+    let runCommandPostMigrations env = function
+        | RunMigrationsCommand.CreateTask name -> liftTsk <| createTask env name
+        | RunMigrationsCommand.DeleteTask name -> liftTsk <| deleteTask env name
+        | RunMigrationsCommand.RenameTask (oldName, newName) -> liftTsk <| renameTask env oldName newName
         | RunMigrationsCommand.GetTasks ->
             monad {
-                let! env = liftEnv readEnv
                 let! tasks = liftTsk <| getTasks env
                 if List.isEmpty tasks then
                     do! liftCon <| writeLine "No current tasks, to create one run 'now task <name>'"
@@ -190,7 +179,6 @@ module Now =
             }
         | RunMigrationsCommand.StartTask name ->
             monad {
-                let! env = liftEnv readEnv
                 let! task = liftTsk <| getTask env name
                 let! activeTask = liftTsk <| getActiveTask env
                 
@@ -199,9 +187,17 @@ module Now =
                 
                 do! liftTsk <| setActiveTask env (Some task)
             }
+        | Status ->
+            monad {
+                let! activeTask = liftTsk <| getActiveTask env
+                match activeTask with
+                | Some t -> 
+                    do! liftCon <| writeLine (sprintf "Working on: %s" t.name)
+                | None ->
+                    do! liftCon <| writeLine " Nothing in progress. To start a task, run 'now start <name>'"
+            }
         | Version ->
             monad {
-                let! env = liftEnv readEnv
                 let! globalVersion = liftMig <| getMigrationVersion env
                 match globalVersion with
                 | Some (MigrationVersion (id, version)) -> 
@@ -222,5 +218,5 @@ module Now =
                         [
                             Migration.create "FD2D8875-2969-4BD9-8BE3-A230E286D15D" 1 Now1_AddTask.run
                         ]
-                return! runCommandPostMigrations cmd
+                return! runCommandPostMigrations env cmd
             }
