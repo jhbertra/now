@@ -228,6 +228,7 @@ module Now =
                         env
                         [
                             Migration.create "FD2D8875-2969-4BD9-8BE3-A230E286D15D" 1 Now1_AddTask.run
+                            Migration.create "0FF381A2-A98C-43BF-9E89-71A220D043E1" 2 Now2_AddPlugin.run
                         ]
                 return! runCommandPostMigrations env cmd
             }
