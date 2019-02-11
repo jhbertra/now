@@ -72,6 +72,7 @@ type Sql<'a> with
 *)
 
 
+open System
 open FSharpPlus.Operators
 
 
@@ -171,6 +172,7 @@ let runInTransaction db sql = RunInTransaction(db, sql, Pure ()) |> Free
 let drop db = Drop(db, Pure()) |> Free
 let execNonQuery db query = ExecNonQuery(db, query, Pure) |> Free
 let execQuery db query = ExecQuery(db, query, Pure) |> Free
+
 let mapReader<'a> f (sql : Sql<SQLiteDataReader>) : Sql<'a list> =
     map
         ( fun (reader : SQLiteDataReader) ->
@@ -180,3 +182,16 @@ let mapReader<'a> f (sql : Sql<SQLiteDataReader>) : Sql<'a list> =
             results
         )
         sql
+
+let getOptional<'a> ordinal (reader : SQLiteDataReader) =
+    reader.GetValue ordinal
+    |> (function
+       | :? DBNull as x -> None
+       | x -> x :?> 'a |> Some
+       )
+
+let groupByOption f =
+    List.map (fanout f id)
+    >> List.groupBy fst
+    >> List.map (fun (x, y) -> (x, List.map snd y))
+    >> List.collect (fun (key , x) -> Option.toList key |> List.map ((flip tuple2) x))

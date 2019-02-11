@@ -11,6 +11,7 @@ module Now =
     type RunMigrationsCommand =
         | CreateTask of string
         | DeleteTask of string
+        | GetPlugins
         | GetTasks
         | RenameTask of string * string
         | StartTask of string
@@ -27,6 +28,7 @@ module Now =
         | FileError of Fs.Error
         | SqlError of Sql.Error
         | CommandLineInvalid
+        | PluginError of Plugin.Error
         | TaskError of Task.Error
         | EnvironmentError of Env.Error
         | MigrationError of Migration.Error
@@ -37,6 +39,7 @@ module Now =
 
     type NowInstruction<'a> =
         | RunConsole of Console.Console<'a>
+        | RunPlugin of Plugin.Program<'a>
         | RunTask of Task.Program<'a>
         | RunMigration of Migration.Program<'a>
         | RunEnvironment of Env.Program<'a>
@@ -48,6 +51,7 @@ module Now =
 
     let mapI f = function
         | RunConsole x -> RunConsole (map f x)
+        | RunPlugin x -> RunPlugin (map f x)
         | RunTask x -> RunTask (map f x)
         | RunMigration x -> RunMigration (map f x)
         | RunEnvironment x -> RunEnvironment (map f x)
@@ -64,6 +68,7 @@ module Now =
         static member (>>=) (x, f) = bind f x
 
     let liftCon x = RunConsole x |> mapI Pure |> Free
+    let liftPlg x = RunPlugin x |> mapI Pure |> Free
     let liftTsk x = RunTask x |> mapI Pure |> Free
     let liftMig x = RunMigration x |> mapI Pure |> Free
     let liftEnv x = RunEnvironment x |> mapI Pure |> Free
@@ -76,6 +81,7 @@ module Now =
     let rec interpret = function
         | Pure a -> result a
         | Free (RunConsole x) -> Console.interpret x |> interpret
+        | Free (RunPlugin x) -> Plugin.interpret x |> Eff.mapError PluginError >>= interpret
         | Free (RunTask x) -> Task.interpret x |> Eff.mapError TaskError >>= interpret
         | Free (RunMigration x) -> Migration.interpret x |> Eff.mapError MigrationError >>= interpret
         | Free (RunEnvironment x) -> Env.interpret x |> Eff.mapError EnvironmentError >>= interpret
@@ -127,11 +133,15 @@ module Now =
         | Arg name -> Ok (WithMigrations (CreateTask name))
         | Flag "d" "delete" (true, Arg name) -> Ok (WithMigrations (DeleteTask name))
         | Opt "m" "rename" (Some newName, Arg name) -> Ok  (WithMigrations (RenameTask (name, newName)))
-    //    | ["start"; name] when (name.StartsWith("-")) |> not -> Ok (WithMigrations (StartTask name))
+        | _ -> Error CommandLineInvalid
+
+    let parsePlugin = function
+        | Nil -> Ok (WithMigrations GetPlugins)
         | _ -> Error CommandLineInvalid
 
     let parseCommand = function
         | Command "install" Nil -> Ok Install
+        | Command "plugin" opts -> parsePlugin opts
         | Command "start" (Arg name) -> StartTask name |> WithMigrations |> Ok
         | Command "stop" Nil -> StopTask |> WithMigrations |> Ok
         | Command "task" opts -> parseTask opts
@@ -159,6 +169,7 @@ module Now =
 //    | MigrationError (Migration.MigrationFailed (version, e)) -> sprintf "Error running migration %A: %s" version e.Message
     
     open Now.Console
+    open Now.Plugin
     open Now.Task
     open Now.Env
     open Now.Migration
@@ -169,6 +180,16 @@ module Now =
         | RunMigrationsCommand.CreateTask name -> liftTsk <| createTask env name
         | RunMigrationsCommand.DeleteTask name -> liftTsk <| deleteTask env name
         | RunMigrationsCommand.RenameTask (oldName, newName) -> liftTsk <| renameTask env oldName newName
+        | RunMigrationsCommand.GetPlugins ->
+            monad {
+                let! plugins = liftPlg <| getPlugins env
+                if List.isEmpty plugins then
+                    do! liftCon <| writeLine "No plugins installed, to install one run 'now plugin install <plugin-dir>'"
+                else
+                    for plugin in plugins do
+                        do! liftCon <| writeLine (sprintf "%s" plugin.name)
+                return ()
+            }
         | RunMigrationsCommand.GetTasks ->
             monad {
                 let! tasks = liftTsk <| getTasks env

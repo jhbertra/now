@@ -133,12 +133,6 @@ module Task =
         taskPluginPropertyValue : string option
     }
 
-    let groupByOption f =
-        List.map (fanout f id)
-        >> List.groupBy fst
-        >> List.map (fun (x, y) -> (x, List.map snd y))
-        >> List.collect (fun (key , x) -> Option.toList key |> List.map ((flip tuple2) x))
-
     let private getTaskSql =
         """
         SELECT
@@ -167,13 +161,6 @@ module Task =
               )
         ON [TaskPlugin].[TaskId] = [Task].[Id]
         """
-
-    let getOptional<'a> ordinal (reader : SQLiteDataReader) =
-        reader.GetValue ordinal
-        |> (function
-           | :? DBNull as x -> None
-           | x -> x :?> 'a |> Some
-           )
     
     let private mapTaskReader =
         mapReader

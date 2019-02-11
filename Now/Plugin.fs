@@ -32,140 +32,131 @@ module Plugin =
 
     let create id name properties = { id = id; name = name; properties = properties }
 
-//    (*
-//        Error
-//    *)
-//
-//    type Error =
-//        | SqlError of Sql.Error
-//        | FileError of Fs.Error
-//        | TaskExists of string
-//        | TaskNotFound of string
-//        | ActiveTaskIdNotFound of string
-//        | ActiveTaskExists
-//        | ActiveTaskNotFound
-//        | DeleteActiveTask of string
-//
-//    (*
-//        DSL
-//    *)
-//
-//    type Instruction<'a> =
-//        | CreateTask of Env * string * 'a
-//        | DeleteTask of Env * string * 'a
-//        | GetActiveTask of Env * (Task option -> 'a)
-//        | SetActiveTask of Env * Task option * 'a
-//        | GetTask of Env * string * (Task -> 'a)
-//        | GetTasks of Env * (Task list -> 'a)
-//        | RenameTask of Env * string * string * 'a
-//
-//    type Program<'a> =
-//        | Free of Instruction<Program<'a>>
-//        | Pure of 'a
-//
-//    let private mapI f = function
-//        | CreateTask(env, name, next) -> CreateTask(env, name, next |> f)
-//        | DeleteTask(env, name, next) -> DeleteTask(env, name, next |> f)
-//        | GetActiveTask(env, next) -> GetActiveTask(env, next >> f)
-//        | GetTask(env, name, next) -> GetTask(env, name, next >> f)
-//        | GetTasks(env, next) -> GetTasks(env, next >> f)
-//        | RenameTask(env, oldName, newName , next) -> RenameTask(env, oldName, newName , next |> f)
-//        | SetActiveTask(env, task, next) -> SetActiveTask(env, task, next |> f)
-//
-//    let rec bind f = function
-//        | Free x -> x |> mapI (bind f) |> Free
-//        | Pure x -> f x
-//
-//    let map f = bind (f >> Pure)
-//
-//    type Program<'a> with
-//
-//        static member Return x = Pure x
-//
-//        static member (>>=) (x, f) = bind f x
-//
-//    let createTask env name = Free(CreateTask(env, name, Pure()))
-//    let deleteTask env name = Free(DeleteTask(env, name, Pure()))
-//    let getActiveTask env = Free(GetActiveTask(env, Pure))
-//    let setActiveTask env task = Free(SetActiveTask(env, task, Pure()))
-//    let getTask env name = Free(GetTask(env, name, Pure))
-//    let getTasks env = Free(GetTasks(env, Pure))
-//    let renameTask env oldName newName = Free(RenameTask(env, oldName, newName, Pure()))
-//    
-////    let getActiveTask env =    
-////        monad {
-////            let! taskActions = getTaskActions env
-////        }
-//
-//
-//    (*
-//        Interpreter
-//    *)
-//    open FSharpPlus.Builders
-//    open FSharpPlus.Operators
-//    
-//    let liftSql' sql = liftSql sql |> mapError SqlError
-//    let liftFs' fs = liftFs fs |> mapError FileError
-//    
-//    let private getTaskSql db name =
-//        execQuery
-//            db
-//            ( Query
-//                ( """
-//                  SELECT
-//                      [Task].[Name]
-//                    , [Task].[Id]
-//                  FROM [Task]
-//                  WHERE [Task].[Name] = @name
-//                  LIMIT 1
-//                  """
-//                , [ param "@name" name ]
-//                )
-//            )
-//        |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
-//        |> map tryHead
-//        |> liftSql'
-//    
-//    let private getTaskByIdSql db id =
-//        execQuery
-//            db
-//            ( Query
-//                ( """
-//                  SELECT
-//                      [Task].[Name]
-//                    , [Task].[Id]
-//                  FROM [Task]
-//                  WHERE [Task].[Id] = @id
-//                  LIMIT 1
-//                  """
-//                , [ param "@id" id ]
-//                )
-//            )
-//        |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
-//        |> map tryHead
-//        |> liftSql'
-//
-//    let getActiveTaskFile { rootDir = rootDir } = IO.Path.Combine(rootDir, ".activetask")
-//
-//    let getActiveTaskImpl env =
-//        monad {
-//            let! fileExists = liftFs' <| Fs.exists (getActiveTaskFile env)
-//            if fileExists then
-//                let! taskfile = liftFs' <| read (getActiveTaskFile env)
-//                let! task = getTaskByIdSql env.database (Int32.Parse taskfile)
-//                match task with
-//                | Some t -> return Some t
-//                | None -> return! ActiveTaskIdNotFound taskfile |> Error |> liftRes
-//            else
-//                return None
-//        }
-//
-//    let rec interpret = function
-//        | Pure a -> result a
-//    
-//        | Free(CreateTask(env, name, next)) ->
+    (*
+        Error
+    *)
+
+    type Error =
+        | SqlError of Sql.Error
+        | FileError of Fs.Error
+        | PluginExists of string
+        | PluginNotFound of string
+
+    (*
+        DSL
+    *)
+
+    type Instruction<'a> =
+        | InstallPlugin of Env * string * 'a
+        | GetPlugin of Env * string * (Plugin -> 'a)
+        | GetPlugins of Env * (Plugin list -> 'a)
+
+    type Program<'a> =
+        | Free of Instruction<Program<'a>>
+        | Pure of 'a
+
+    let private mapI f = function
+        | InstallPlugin(env, dir, next) -> InstallPlugin(env, dir, next |> f)
+        | GetPlugin(env, name, next) -> GetPlugin(env, name, next >> f)
+        | GetPlugins(env, next) -> GetPlugins(env, next >> f)
+
+    let rec bind f = function
+        | Free x -> x |> mapI (bind f) |> Free
+        | Pure x -> f x
+
+    let map f = bind (f >> Pure)
+
+    type Program<'a> with
+
+        static member Return x = Pure x
+
+        static member (>>=) (x, f) = bind f x
+
+    let installPlugin env dir = Free(InstallPlugin(env, dir, Pure()))
+    let getPlugin env name = Free(GetPlugin(env, name, Pure))
+    let getPlugins env = Free(GetPlugins(env, Pure))
+
+
+    (*
+        Interpreter
+    *)
+    open FSharpPlus.Builders
+    open FSharpPlus.Operators
+    
+    let liftSql' sql = liftSql sql |> mapError SqlError
+    let liftFs' fs = liftFs fs |> mapError FileError
+    
+    type private PluginRecord = {
+        pluginName : string
+        pluginId : int
+        pluginPropertyName : string option
+        pluginPropertyId : int option
+    }
+
+    let private getPluginSql =
+        """
+        SELECT
+            [Plugin].[Name] AS [PluginName]
+          , [Plugin].[Id] AS [PluginId]
+          , [PluginProperty].[Name] AS [PluginPropertyName]
+          , [PluginProperty].[Id] AS [PluginPropertyId]
+        FROM [Plugin]
+            LEFT JOIN [PluginProperty]
+            ON [PluginProperty].[PluginId] = [Plugin].[Id]
+        """
+    
+    let private mapPluginReader =
+        mapReader
+            (fun reader ->
+                { pluginName = reader.GetString 0
+                  pluginId = reader.GetInt32 1
+                  pluginPropertyName = reader |> getOptional<string> 2
+                  pluginPropertyId = reader |> getOptional<Int64> 3 |> Option.map int })
+
+    let private buildPlugins records =
+        records
+        |> List.groupBy (fun x -> (x.pluginId, x.pluginName))
+        |> map
+            ( fun ((pluginId, pluginName), pluginG) ->
+                create
+                    pluginId
+                    pluginName
+                    ( pluginG
+                      |> List.collect (fun x -> tuple2 <!> x.pluginPropertyId <*> x.pluginPropertyName |> Option.toList)
+                      |> map (uncurry PluginProperty.create)
+                    )
+            )
+
+    let private getPlugin' db name =
+        execQuery
+            db
+            ( Query
+                ( getPluginSql ++ "WHERE [Plugin].[Name] = @name"
+                , [ param "@name" name ]
+                )
+            )
+        |> mapPluginReader
+        |> map (buildPlugins >> tryHead)
+        |> liftSql'
+    
+    let private getPluginByIdSql db id =
+        execQuery
+            db
+            ( Query
+                ( getPluginSql ++ "WHERE [Plugin].[Id] = @id"
+                , [ param "@id" id ]
+                )
+            )
+        |> mapPluginReader
+        |> map (buildPlugins >> tryHead)
+        |> liftSql'
+
+    let rec interpret = function
+        | Pure a -> result a
+    
+//        | Free(InstallPlugin(env, dir, next)) ->
 //            monad {
-//                let! task = getTaskSql env.database name
+//                let! task = getTask' env.database name
 //                if Option.isSome task then
 //                    return! TaskExists name |> Error |> liftRes
 //                else
@@ -184,115 +175,21 @@ module Plugin =
 //            }
 //            |> map (konst next)
 //            >>= interpret
-//    
-//        | Free(DeleteTask(env, name, next)) ->
-//            monad {
-//                let! task = getTaskSql env.database name
-//                let! activeTask = getActiveTaskImpl env
-//                match (task, activeTask) with
-//                | Some t, Some active when t.id = active.id ->
-//                    return! DeleteActiveTask t.name |> Error |> liftRes
-//                | None, _->
-//                    return! TaskNotFound name |> Error |> liftRes
-//                | Some t, _ ->
-//                    return!
-//                        execNonQuery
-//                            env.database
-//                            ( Query
-//                                ( """
-//                                  DELETE FROM [Task]
-//                                  WHERE [Name] = @name
-//                                  """
-//                                , [ param "@name" name ]
-//                                )
-//                            )
-//                        |> liftSql'
-//            }
-//            |> map (konst next)
-//            >>= interpret
-//    
-//        | Free(GetActiveTask(env, next)) -> getActiveTaskImpl env |> map next >>= interpret
-//    
-//        | Free(SetActiveTask(env, Some task, next)) ->
-//            monad {
-//                let file = getActiveTaskFile env
-//                let! fileExists = liftFs' <| Fs.exists file
-//                if fileExists then
-//                    return! liftRes <| Error ActiveTaskExists
-//                else
-//                    do! liftFs' <| mkfile file
-//                    do! liftFs' <| write file (sprintf "%d" task.id)
-//            }
-//            |> map (konst next)
-//            >>= interpret
-//    
-//        | Free(SetActiveTask(env, None, next)) ->
-//            monad {
-//                let file = getActiveTaskFile env
-//                let! fileExists = liftFs' <| Fs.exists file
-//                if fileExists then
-//                    do! liftFs' <| rmfile file
-//                else
-//                    return! liftRes <| Error ActiveTaskNotFound
-//            }
-//            |> map (konst next)
-//            >>= interpret
-//    
-//        | Free(GetTask(env, name, next)) ->
-//            monad {
-//                let! task = getTaskSql env.database name
-//                match task with
-//                | Some t -> return t
-//                | None -> return! TaskNotFound name |> Error |> liftRes
-//            }
-//            |> map next
-//            >>= interpret
-//    
-//        | Free(GetTasks(env, next)) ->
-//            execQuery
-//                env.database
-//                ( Query
-//                    ( """
-//                      SELECT
-//                          [Name]
-//                        , [Id]
-//                      FROM [Task]
-//                      ORDER BY [Name]
-//                      """
-//                    , []
-//                    )
-//                )
-//            |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
-//            |> liftSql'
-//            |> map next
-//            >>= interpret
-//    
-//        | Free(RenameTask(env, oldName, newName, next)) ->
-//            monad {
-//                let! oldTask = getTaskSql env.database oldName
-//                let! newTask = getTaskSql env.database newName
-//
-//                if Option.isNone oldTask then
-//                    return! TaskNotFound oldName |> Error |> liftRes
-//                elif Option.isSome newTask then
-//                    return! TaskExists newName |> Error |> liftRes
-//                else
-//                    return!
-//                        execNonQuery
-//                            env.database
-//                            ( Query
-//                                ( """
-//                                  UPDATE [Task] SET    
-//                                      [Name] = @newName
-//                                  WHERE [Name] = @oldName
-//                                  """
-//                                , [
-//                                      param "@oldName" oldName
-//                                      param "@newName" newName
-//                                  ]
-//                                )
-//                            )
-//                        |> liftSql'
-//            }
-//            |> map (konst next)
-//            >>= interpret
+    
+        | Free(GetPlugin(env, name, next)) ->
+            monad {
+                let! task = getPlugin' env.database name
+                match task with
+                | Some t -> return t
+                | None -> return! PluginNotFound name |> Error |> liftRes
+            }
+            |> map next
+            >>= interpret
+    
+        | Free(GetPlugins(env, next)) ->
+            execQuery env.database ( Query ( getPluginSql, []) )
+            |> mapPluginReader
+            |> map buildPlugins
+            |> liftSql'
+            |> map next
+            >>= interpret
