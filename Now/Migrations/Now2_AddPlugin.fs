@@ -8,10 +8,13 @@ let run db =
         db
         ( Query
             ( """
+              PRAGMA foreign_keys = ON;
+
               CREATE TABLE [Plugin]
                 ( [Id] INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT
                 , [Name] VARCHAR(64) NOT NULL UNIQUE
                 );
+
               CREATE TABLE [PluginProperty]
                 ( [Id] INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT
                 , [Name] VARCHAR(64) NOT NULL UNIQUE
@@ -20,7 +23,9 @@ let run db =
                     FOREIGN KEY (PluginId)
                     REFERENCES Plugin (Id)
                     ON DELETE CASCADE
+                    ON UPDATE CASCADE
                 );
+
               CREATE TABLE [TaskPlugin]
                 ( [Id] INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT
                 , [TaskId] INTEGER
@@ -29,11 +34,14 @@ let run db =
                     FOREIGN KEY (TaskId)
                     REFERENCES Task (Id)
                     ON DELETE CASCADE
+                    ON UPDATE CASCADE
                 , CONSTRAINT fkTaskPluginPluginId
                     FOREIGN KEY (PluginId)
                     REFERENCES Plugin (Id)
                     ON DELETE CASCADE
+                    ON UPDATE CASCADE
                 );
+
               CREATE TABLE [TaskPluginProperty]
                 ( [Id] INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT
                 , [TaskPluginId] INTEGER
@@ -43,10 +51,12 @@ let run db =
                     FOREIGN KEY (TaskPluginId)
                     REFERENCES TaskPlugin (Id)
                     ON DELETE CASCADE
+                    ON UPDATE CASCADE
                 , CONSTRAINT fkTaskPluginPropertyPluginPropertyId
                     FOREIGN KEY (PluginPropertyId)
                     REFERENCES PluginProperty (Id)
                     ON DELETE CASCADE
+                    ON UPDATE CASCADE
                 );
               """
             , []
