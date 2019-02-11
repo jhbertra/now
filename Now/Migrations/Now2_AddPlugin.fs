@@ -15,6 +15,11 @@ let run db =
               CREATE TABLE [PluginProperty]
                 ( [Id] INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT
                 , [Name] VARCHAR(64) NOT NULL UNIQUE
+                , [PluginId] INTEGER
+                , CONSTRAINT fkPluginPropertyPluginId
+                    FOREIGN KEY (PluginId)
+                    REFERENCES Plugin (Id)
+                    ON DELETE CASCADE
                 );
               CREATE TABLE [TaskPlugin]
                 ( [Id] INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT

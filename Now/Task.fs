@@ -10,20 +10,40 @@ open Eff
 *)
 
 
-type Action =
-| Start of DateTimeOffset
-| Stop of DateTimeOffset
+type PluginPropertyAssignment = {
+    id : int
+    property : PluginProperty
+    value : string
+}
+
+
+module PluginPropertyAssignment =
+
+    let create id property value = { id = id; property = property; value = value }
+
+
+type PluginAssignment = {
+    id : int
+    plugin : Plugin
+    properties : PluginPropertyAssignment list 
+}
+
+
+module PluginAssignment =
+
+    let create id plugin properties = { id = id; plugin = plugin; properties = properties }
 
 
 type Task = {
     id : int
     name : string
+    plugins : PluginAssignment list
 }
 
 
 module Task =
 
-    let create id name = { id = id; name = name }
+    let create id name plugins = { id = id; name = name; plugins = plugins }
 
     (*
         Error
@@ -94,48 +114,154 @@ module Task =
     (*
         Interpreter
     *)
+    open System.Data.SQLite
     open FSharpPlus.Builders
     open FSharpPlus.Operators
     
     let liftSql' sql = liftSql sql |> mapError SqlError
     let liftFs' fs = liftFs fs |> mapError FileError
     
-    let private getTaskSql db name =
+    type private TaskRecord = {
+        taskName : string
+        taskId : int
+        taskPluginId : int option
+        pluginName : string option
+        pluginId : int option
+        pluginPropertyName : string option
+        pluginPropertyId : int option
+        taskPluginPropertyId : int option
+        taskPluginPropertyValue : string option
+    }
+
+    let groupByOption f =
+        List.map (fanout f id)
+        >> List.groupBy fst
+        >> List.map (fun (x, y) -> (x, List.map snd y))
+        >> List.collect (fun (key , x) -> Option.toList key |> List.map ((flip tuple2) x))
+
+    let private getTaskSql =
+        """
+        SELECT
+            [Task].[Name] AS [TaskName]
+          , [Task].[Id] AS [TaskId]
+          , [TaskPlugin].[Id] AS [TaskPluginId]
+          , [Plugin].[Name] AS [PluginName]
+          , [Plugin].[Id] AS [PluginId]
+          , [PluginProperty].[Name] AS [PluginPropertyName]
+          , [PluginProperty].[Id] AS [PluginPropertyId]
+          , [TaskPluginProperty].[Id] AS [TaskPluginPropertyId]
+          , [TaskPluginProperty].[Value] AS [TaskPluginPropertyValue]
+        FROM [Task]
+            LEFT JOIN
+              ( [TaskPlugin]
+                    INNER JOIN [Plugin]
+                    ON [Plugin].[Id] = [TaskPlugin].[PluginId]
+                
+                    LEFT JOIN
+                      ( [PluginProperty]
+                            INNER JOIN [TaskPluginProperty]
+                            ON [TaskPluginProperty].[PluginPropertyId] = [PluginProperty].[Id]
+                      )
+                    ON [TaskPluginProperty].[TaskPluginId] = [TaskPlugin].[Id]
+                    AND [PluginProperty].[PluginId] = [Plugin].[Id]
+              )
+        ON [TaskPlugin].[TaskId] = [Task].[Id]
+        """
+
+    let getOptional<'a> ordinal (reader : SQLiteDataReader) =
+        reader.GetValue ordinal
+        |> (function
+           | :? DBNull as x -> None
+           | x -> x :?> 'a |> Some
+           )
+    
+    let private mapTaskReader =
+        mapReader
+            (fun reader ->
+                { taskName = reader.GetString 0
+                  taskId = reader.GetInt32 1
+                  taskPluginId = reader |> getOptional<Int64> 2 |> Option.map int
+                  pluginName = reader |> getOptional<string> 3
+                  pluginId = reader |> getOptional<Int64> 4 |> Option.map int
+                  pluginPropertyName = reader |> getOptional<string> 5
+                  pluginPropertyId = reader |> getOptional<Int64> 6 |> Option.map int
+                  taskPluginPropertyId = reader |> getOptional<Int64> 7 |> Option.map int
+                  taskPluginPropertyValue = reader |> getOptional<string> 8 })
+
+    let private buildTasks =
+        List.groupBy (fun x -> (x.taskId, x.taskName))
+        >> map
+            (fun ((taskId, taskName), taskg) ->
+                create
+                    taskId
+                    taskName
+                    (taskg
+                    |> groupByOption (fun x -> tuple3 <!> x.taskPluginId <*> x.pluginId <*> x.pluginName)
+                    |> map
+                        (fun ((taskPluginId, pluginId, pluginName), taskPluginG) ->
+                            PluginAssignment.create
+                                taskPluginId
+                                (Plugin.create
+                                    pluginId
+                                    pluginName
+                                    (taskPluginG
+                                    |> List.collect
+                                        (fun x ->
+                                            (tuple2
+                                                <!> x.pluginPropertyName
+                                                <*> x.pluginPropertyId
+                                            )
+                                            |> Option.toList)
+                                    |> map
+                                        (fun (pluginPropertyName, pluginPropertyId) ->
+                                            PluginProperty.create pluginPropertyId pluginPropertyName
+                                        )
+                                    )
+                                )
+                                (taskPluginG
+                                |> List.collect
+                                    (fun x ->
+                                        (tuple4
+                                            <!> x.pluginPropertyName
+                                            <*> x.pluginPropertyId
+                                            <*> x.taskPluginPropertyValue
+                                            <*> x.taskPluginPropertyId
+                                        )
+                                        |> Option.toList)
+                                |> map
+                                    (fun (pluginPropertyName, pluginPropertyId, taskPluginPropertyValue, taskPluginPropertyId) ->
+                                        PluginPropertyAssignment.create
+                                            taskPluginPropertyId
+                                            (PluginProperty.create pluginPropertyId pluginPropertyName)
+                                            taskPluginPropertyValue
+                                    )
+                                )
+                        )
+                    )
+            )
+
+    let private getTask' db name =
         execQuery
             db
             ( Query
-                ( """
-                  SELECT
-                      [Task].[Name]
-                    , [Task].[Id]
-                  FROM [Task]
-                  WHERE [Task].[Name] = @name
-                  LIMIT 1
-                  """
+                ( getTaskSql ++ "WHERE [Task].[Name] = @name"
                 , [ param "@name" name ]
                 )
             )
-        |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
-        |> map tryHead
+        |> mapTaskReader
+        |> map (buildTasks >> tryHead)
         |> liftSql'
     
     let private getTaskByIdSql db id =
         execQuery
             db
             ( Query
-                ( """
-                  SELECT
-                      [Task].[Name]
-                    , [Task].[Id]
-                  FROM [Task]
-                  WHERE [Task].[Id] = @id
-                  LIMIT 1
-                  """
+                ( getTaskSql ++ "WHERE [Task].[Id] = @id"
                 , [ param "@id" id ]
                 )
             )
-        |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
-        |> map tryHead
+        |> mapTaskReader
+        |> map (buildTasks >> tryHead)
         |> liftSql'
 
     let getActiveTaskFile { rootDir = rootDir } = IO.Path.Combine(rootDir, ".activetask")
@@ -158,7 +284,7 @@ module Task =
     
         | Free(CreateTask(env, name, next)) ->
             monad {
-                let! task = getTaskSql env.database name
+                let! task = getTask' env.database name
                 if Option.isSome task then
                     return! TaskExists name |> Error |> liftRes
                 else
@@ -180,7 +306,7 @@ module Task =
     
         | Free(DeleteTask(env, name, next)) ->
             monad {
-                let! task = getTaskSql env.database name
+                let! task = getTask' env.database name
                 let! activeTask = getActiveTaskImpl env
                 match (task, activeTask) with
                 | Some t, Some active when t.id = active.id ->
@@ -233,7 +359,7 @@ module Task =
     
         | Free(GetTask(env, name, next)) ->
             monad {
-                let! task = getTaskSql env.database name
+                let! task = getTask' env.database name
                 match task with
                 | Some t -> return t
                 | None -> return! TaskNotFound name |> Error |> liftRes
@@ -242,28 +368,17 @@ module Task =
             >>= interpret
     
         | Free(GetTasks(env, next)) ->
-            execQuery
-                env.database
-                ( Query
-                    ( """
-                      SELECT
-                          [Name]
-                        , [Id]
-                      FROM [Task]
-                      ORDER BY [Name]
-                      """
-                    , []
-                    )
-                )
-            |> mapReader (fun reader -> { name = reader.GetString 0; id = reader.GetInt32 1 })
+            execQuery env.database ( Query ( getTaskSql, []) )
+            |> mapTaskReader
+            |> map buildTasks
             |> liftSql'
             |> map next
             >>= interpret
     
         | Free(RenameTask(env, oldName, newName, next)) ->
             monad {
-                let! oldTask = getTaskSql env.database oldName
-                let! newTask = getTaskSql env.database newName
+                let! oldTask = getTask' env.database oldName
+                let! newTask = getTask' env.database newName
 
                 if Option.isNone oldTask then
                     return! TaskNotFound oldName |> Error |> liftRes

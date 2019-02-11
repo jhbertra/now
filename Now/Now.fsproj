@@ -12,6 +12,7 @@
     <Compile Include="Eff.fs" />
     <Compile Include="Environment.fs" />
     <Compile Include="Migration.fs" />
+    <Compile Include="Plugin.fs" />
     <Compile Include="Task.fs" />
     <Compile Include="Migrations/*.fs" />
     <Compile Include="Now.fs" />
