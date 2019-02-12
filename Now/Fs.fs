@@ -34,7 +34,7 @@ type Error =
 type Instruction<'a> =
     | Append of string * string * 'a
     | Cp of File * string * 'a
-    | Ex of string * (bool -> 'a)
+    | Ex of File * (bool -> 'a)
     | Home of (string -> 'a)
     | Mk of File * 'a
     | Mv of File * string * 'a
@@ -53,7 +53,7 @@ type Fs<'a> =
 let private mapI f = function
     | Append(path, content, next) -> Append(path, content, next |> f)
     | Cp(file, dest, next) -> Cp(file, dest, next |> f)
-    | Ex (path, next) -> Ex(path, next >> f)
+    | Ex (file, next) -> Ex(file, next >> f)
     | Home next -> Home(next >> f)
     | Mk(file, next) -> Mk(file, next |> f)
     | Mv(file, dest, next) -> Mv(file, dest, next |> f)
@@ -117,6 +117,7 @@ let rec private interpret' = function
         elif IO.Directory.Exists path |> not then
             NotFound (Directory, path) |> Error
         else
+            Directory.CreateDirectory dest |> ignore
             copyDir path dest
             Ok ()
         |> Result.map (konst next)
@@ -133,7 +134,8 @@ let rec private interpret' = function
         |> Result.map (konst next)
         >>= interpret'
 
-    | Free(Ex(path, next)) -> IO.File.Exists path |> next |> interpret'
+    | Free(Ex((File, path), next)) -> IO.File.Exists path |> next |> interpret'
+    | Free(Ex((Directory, path), next)) -> IO.Directory.Exists path |> next |> interpret'
 
     | Free(Home next) ->
         Environment.SpecialFolder.UserProfile
@@ -255,7 +257,9 @@ let append path content = Append(path, content, Pure ()) |> Free
 let cp file dest = Cp(file, dest, Pure ()) |> Free
 let cpdir name dest = Cp((Directory, name), dest, Pure ()) |> Free
 let cpfile name dest = Cp((File, name), dest, Pure ()) |> Free
-let exists path = Ex(path, Pure) |> Free
+let dirExists path = Ex((Directory, path), Pure) |> Free
+let fileExists path = Ex((File, path), Pure) |> Free
+let exists file = Ex(file, Pure) |> Free
 let home = Home Pure |> Free
 let mk file = Mk(file, Pure ()) |> Free
 let mkdir name = Mk((Directory, name), Pure ()) |> Free

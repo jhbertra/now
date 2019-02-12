@@ -104,11 +104,6 @@ module Task =
     let getTask env name = Free(GetTask(env, name, Pure))
     let getTasks env = Free(GetTasks(env, Pure))
     let renameTask env oldName newName = Free(RenameTask(env, oldName, newName, Pure()))
-    
-//    let getActiveTask env =    
-//        monad {
-//            let! taskActions = getTaskActions env
-//        }
 
 
     (*
@@ -255,7 +250,7 @@ module Task =
 
     let getActiveTaskImpl env =
         monad {
-            let! fileExists = liftFs' <| Fs.exists (getActiveTaskFile env)
+            let! fileExists = liftFs' <| fileExists (getActiveTaskFile env)
             if fileExists then
                 let! taskfile = liftFs' <| read (getActiveTaskFile env)
                 let! task = getTaskByIdSql env.database (Int32.Parse taskfile)
@@ -322,7 +317,7 @@ module Task =
         | Free(SetActiveTask(env, Some task, next)) ->
             monad {
                 let file = getActiveTaskFile env
-                let! fileExists = liftFs' <| Fs.exists file
+                let! fileExists = liftFs' <| fileExists file
                 if fileExists then
                     return! liftRes <| Error ActiveTaskExists
                 else
@@ -335,7 +330,7 @@ module Task =
         | Free(SetActiveTask(env, None, next)) ->
             monad {
                 let file = getActiveTaskFile env
-                let! fileExists = liftFs' <| Fs.exists file
+                let! fileExists = liftFs' <| fileExists file
                 if fileExists then
                     do! liftFs' <| rmfile file
                 else

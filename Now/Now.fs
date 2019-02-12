@@ -13,6 +13,7 @@ module Now =
         | DeleteTask of string
         | GetPlugins
         | GetTasks
+        | InstallPlugin of string
         | RenameTask of string * string
         | StartTask of string
         | StopTask
@@ -137,6 +138,7 @@ module Now =
 
     let parsePlugin = function
         | Nil -> Ok (WithMigrations GetPlugins)
+        | Command "install" (Arg dir) -> Ok (WithMigrations (InstallPlugin dir))
         | _ -> Error CommandLineInvalid
 
     let parseCommand = function
@@ -180,6 +182,7 @@ module Now =
         | RunMigrationsCommand.CreateTask name -> liftTsk <| createTask env name
         | RunMigrationsCommand.DeleteTask name -> liftTsk <| deleteTask env name
         | RunMigrationsCommand.RenameTask (oldName, newName) -> liftTsk <| renameTask env oldName newName
+        | RunMigrationsCommand.InstallPlugin dir -> liftPlg <| installPlugin env dir
         | RunMigrationsCommand.GetPlugins ->
             monad {
                 let! plugins = liftPlg <| getPlugins env
