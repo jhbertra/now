@@ -45,27 +45,29 @@ module Migration =
     *)
 
     type Instruction<'a> =
-    | GetMigrationHistory of Env * (MigrationHistoryRecord list -> 'a)
-    | GetMigrationVersion of Env * (MigrationVersion option -> 'a)
-    | RunMigrations of Env * Migration list * 'a
+        | GetMigrationHistory of Env * (MigrationHistoryRecord list -> 'a)
+        | GetMigrationVersion of Env * (MigrationVersion option -> 'a)
+        | RunMigrations of Env * Migration list * 'a
 
     and Program<'a> =
-    | Free of Instruction<Program<'a>>
-    | Pure of 'a
+        | Free of Instruction<Program<'a>>
+        | Pure of 'a
 
     let private mapI f = function
-    | GetMigrationHistory(env, next) -> GetMigrationHistory(env, next >> f)
-    | GetMigrationVersion(env, next) -> GetMigrationVersion(env, next >> f)
-    | RunMigrations(env, migrations, next) -> RunMigrations(env, migrations, next |> f)
+        | GetMigrationHistory(env, next) -> GetMigrationHistory(env, next >> f)
+        | GetMigrationVersion(env, next) -> GetMigrationVersion(env, next >> f)
+        | RunMigrations(env, migrations, next) -> RunMigrations(env, migrations, next |> f)
 
     let rec bind f = function
-    | Free x -> x |> mapI (bind f) |> Free
-    | Pure x -> f x
+        | Free x -> x |> mapI (bind f) |> Free
+        | Pure x -> f x
 
     let map f = bind (f >> Pure)
 
     type Program<'a> with
+
         static member Return x = Pure x
+
         static member (>>=) (x, f) = bind f x
 
     let getMigrationHistory env = Free(GetMigrationHistory(env, Pure))

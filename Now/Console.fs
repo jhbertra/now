@@ -7,6 +7,7 @@ module Now.Console
 
 
 type Instruction<'a> =
+    | Exec of string * string list * (int -> 'a)
     | ReadLine of (string -> 'a)
     | Write of string * 'a
     | WriteLine of string * 'a
@@ -18,6 +19,7 @@ type Console<'a> =
 
 
 let private mapI f = function
+    | Exec (cmd, args, next) -> Exec (cmd, args, next >> f)
     | ReadLine next -> ReadLine (next >> f)
     | Write (line, next) -> Write (line, next |> f)
     | WriteLine (line, next) -> WriteLine (line, next |> f)
@@ -44,10 +46,24 @@ type Console<'a> with
 
 
 open System
+open System.Diagnostics
 
 
 let rec interpret = function
     | Pure a -> a
+
+    | Free (Exec (cmd, args, next)) ->
+        Process.Start
+          ( cmd
+          , args
+            |> List.map (fun s -> if s.Contains(" ") then "\"" + s + "\"" else s)
+            |> fun args -> String.Join(" ", args)
+          )
+        |> fun p ->
+            p.WaitForExit()
+            p.ExitCode
+        |> next
+        |> interpret
 
     | Free (ReadLine next) ->
         Console.ReadLine () |> next |> interpret
@@ -66,6 +82,7 @@ let rec interpret = function
 *)
 
 
+let exec cmd args = Free (Exec (cmd, args, Pure))
 let readLine = Free (ReadLine Pure)
 let write line = Free (Write (line, Pure ()))
 let writeLine line = Free (WriteLine (line, Pure ()))

@@ -1,6 +1,7 @@
 namespace Now
 
 open System
+open Console
 open Fs
 open Sql
 open Eff
@@ -35,6 +36,23 @@ type Manifest = {
 }
 
 
+type PluginCommand =
+    | Start
+    | Stop
+
+
+type PluginArgument = {
+    id : int
+    property : PluginProperty
+    value : string
+}
+
+
+module PluginArgument =
+
+    let create id property value = { id = id; property = property; value = value }
+
+
 module Plugin =
 
     let create id name properties = { id = id; name = name; properties = properties }
@@ -58,6 +76,7 @@ module Plugin =
         | InstallPlugin of Env * string * 'a
         | GetPlugin of Env * string * (Plugin -> 'a)
         | GetPlugins of Env * (Plugin list -> 'a)
+        | RunPlugin of Env * Plugin * PluginCommand * PluginArgument list * 'a
 
     type Program<'a> =
         | Free of Instruction<Program<'a>>
@@ -67,6 +86,7 @@ module Plugin =
         | InstallPlugin(env, dir, next) -> InstallPlugin(env, dir, next |> f)
         | GetPlugin(env, name, next) -> GetPlugin(env, name, next >> f)
         | GetPlugins(env, next) -> GetPlugins(env, next >> f)
+        | RunPlugin(env, plugin, cmd, args, next) -> RunPlugin(env, plugin, cmd, args, next |> f)
 
     let rec bind f = function
         | Free x -> x |> mapI (bind f) |> Free
@@ -83,6 +103,7 @@ module Plugin =
     let installPlugin env dir = Free(InstallPlugin(env, dir, Pure()))
     let getPlugin env name = Free(GetPlugin(env, name, Pure))
     let getPlugins env = Free(GetPlugins(env, Pure))
+    let runPlugin env plugin cmd args = Free(RunPlugin(env, plugin, cmd, args, Pure()))
 
 
     (*
@@ -211,13 +232,30 @@ module Plugin =
                                 |> liftSql'
                                 |> map (konst ())
 
-                        let pluginDir = (IO.Path.Combine(env.rootDir, "plugins\\"))
-                        let! exists = liftFs' <| dirExists pluginDir
+                        let! exists = liftFs' <| dirExists env.pluginDir
                         if not exists then
-                            do! liftFs' <| mkdir pluginDir
-                        do! liftFs' <| cpdir dir (IO.Path.Combine(pluginDir, sprintf "%s\\" manifest.name))
+                            do! liftFs' <| mkdir env.pluginDir
+                        do! liftFs' <| cpdir dir (IO.Path.Combine(env.pluginDir, sprintf "%s\\" manifest.name))
                     | None ->
                         return ()
+            }
+            |> map (konst next)
+            >>= interpret
+    
+        | Free(RunPlugin(env, plugin, cmd, args, next)) ->
+            monad {
+                let! manifest =
+                    read (IO.Path.Combine(IO.Path.Combine(env.pluginDir, sprintf "%s\\" plugin.name), "manifest.json"))
+                    |> map (fun x -> JsonConvert.DeserializeObject<Manifest>(x))
+                    |> liftFs'
+
+                let entry = IO.Path.Combine(IO.Path.Combine(env.pluginDir, sprintf "%s\\" plugin.name), manifest.entry)
+                let command =
+                    match cmd with
+                    | Start -> "start"
+                    | Stop -> "stop"
+
+                return! liftCon <| exec entry [yield command; for arg in args do yield! [sprintf "--%s" arg.property.name; arg.value]]
             }
             |> map (konst next)
             >>= interpret

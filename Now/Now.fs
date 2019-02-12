@@ -177,6 +177,20 @@ module Now =
     open Now.Migration
     open Now.Migrations
     open FSharpPlus.Builders
+    
+    let stopTask env task =
+        monad {
+            do! liftTsk <| setActiveTask env None
+            for plugin in task.plugins do
+                do! liftPlg <| runPlugin env plugin.plugin Stop plugin.properties
+        }
+    
+    let startTask env task =
+        monad {
+            do! liftTsk <| setActiveTask env (Some task)
+            for plugin in task.plugins do
+                do! liftPlg <| runPlugin env plugin.plugin Start plugin.properties
+        }
 
     let runCommandPostMigrations env = function
         | RunMigrationsCommand.CreateTask name -> liftTsk <| createTask env name
@@ -208,19 +222,19 @@ module Now =
                 let! task = liftTsk <| getTask env name
                 let! activeTask = liftTsk <| getActiveTask env
                 
-                if Option.isSome activeTask then
-                    do! liftTsk <| setActiveTask env None
+                match activeTask with
+                | Some t -> do! stopTask env t
+                | None -> return ()
                 
-                do! liftTsk <| setActiveTask env (Some task)
+                do! startTask env task
             }
         | RunMigrationsCommand.StopTask ->
             monad {
                 let! activeTask = liftTsk <| getActiveTask env
                 
-                if Option.isNone activeTask then
-                    do! liftCon <| writeLine " Nothing in progress."
-                
-                do! liftTsk <| setActiveTask env None
+                match activeTask with
+                | Some t -> do! stopTask env t
+                | None -> do! liftCon <| writeLine " Nothing in progress."
             }
         | Status ->
             monad {

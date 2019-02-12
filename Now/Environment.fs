@@ -12,6 +12,7 @@ open FSharpPlus.Builders
 
 type Env = {
     rootDir : string
+    pluginDir : string
     database : Database
 }
 
@@ -23,10 +24,10 @@ module Env =
     *)
 
     type Error =
-    | FileError of Fs.Error
-    | SqlError of Sql.Error
-    | RootDirExists
-    | RootDirMissing
+        | FileError of Fs.Error
+        | SqlError of Sql.Error
+        | RootDirExists
+        | RootDirMissing
 
 
     (*
@@ -34,22 +35,22 @@ module Env =
     *)
 
     type Instruction<'a> =
-    | ReadEnv of (Env -> 'a)
-    | Install of 'a
-    | Uninstall of 'a
+        | ReadEnv of (Env -> 'a)
+        | Install of 'a
+        | Uninstall of 'a
 
     type Program<'a> =
-    | Free of Instruction<Program<'a>>
-    | Pure of 'a
+        | Free of Instruction<Program<'a>>
+        | Pure of 'a
 
     let private mapI f = function
-    | ReadEnv next -> ReadEnv(next >> f)
-    | Install next -> Install(next |> f)
-    | Uninstall next -> Uninstall(next |> f)
+        | ReadEnv next -> ReadEnv(next >> f)
+        | Install next -> Install(next |> f)
+        | Uninstall next -> Uninstall(next |> f)
 
     let rec bind f = function
-    | Free x -> x |> mapI (bind f) |> Free
-    | Pure x -> f x
+        | Free x -> x |> mapI (bind f) |> Free
+        | Pure x -> f x
 
     let map f = bind (f >> Pure)
 
@@ -77,6 +78,7 @@ module Env =
             do! (liftFs <| requireDir rootDir) |> mapError (konst RootDirMissing)
             return {
                 rootDir = rootDir
+                pluginDir = Path.Combine(rootDir, "plugins\\")
                 database = Database ("now", rootDir)
             }
         }

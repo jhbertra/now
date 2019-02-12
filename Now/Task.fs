@@ -10,22 +10,10 @@ open Eff
 *)
 
 
-type PluginPropertyAssignment = {
-    id : int
-    property : PluginProperty
-    value : string
-}
-
-
-module PluginPropertyAssignment =
-
-    let create id property value = { id = id; property = property; value = value }
-
-
 type PluginAssignment = {
     id : int
     plugin : Plugin
-    properties : PluginPropertyAssignment list 
+    properties : PluginArgument list 
 }
 
 
@@ -212,7 +200,7 @@ module Task =
                                         |> Option.toList)
                                 |> map
                                     (fun (pluginPropertyName, pluginPropertyId, taskPluginPropertyValue, taskPluginPropertyId) ->
-                                        PluginPropertyAssignment.create
+                                        PluginArgument.create
                                             taskPluginPropertyId
                                             (PluginProperty.create pluginPropertyId pluginPropertyName)
                                             taskPluginPropertyValue
