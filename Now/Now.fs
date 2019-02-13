@@ -9,11 +9,13 @@ module Now =
     *)
 
     type RunMigrationsCommand =
+        | AddPlugin of task : string * plugin : string
         | CreateTask of string
         | DeleteTask of string
         | GetPlugins
         | GetTasks
         | InstallPlugin of string
+        | RemovePlugin of task : string * plugin : string
         | RenameTask of string * string
         | StartTask of string
         | StopTask
@@ -132,6 +134,8 @@ module Now =
     let parseTask = function
         | Nil -> Ok (WithMigrations GetTasks)
         | Arg name -> Ok (WithMigrations (CreateTask name))
+        | Opt "p" "plugin" (Some plugin, Arg name) -> Ok (WithMigrations (AddPlugin (name, plugin)))
+        | Opt "p" "plugin" (Some plugin, Flag "d" "delete" (true, Arg name)) -> Ok (WithMigrations (RemovePlugin (name, plugin)))
         | Flag "d" "delete" (true, Arg name) -> Ok (WithMigrations (DeleteTask name))
         | Opt "m" "rename" (Some newName, Arg name) -> Ok  (WithMigrations (RenameTask (name, newName)))
         | _ -> Error CommandLineInvalid
@@ -197,6 +201,25 @@ module Now =
         | RunMigrationsCommand.DeleteTask name -> liftTsk <| deleteTask env name
         | RunMigrationsCommand.RenameTask (oldName, newName) -> liftTsk <| renameTask env oldName newName
         | RunMigrationsCommand.InstallPlugin dir -> liftPlg <| installPlugin env dir
+        | RunMigrationsCommand.AddPlugin (taskName, pluginName) ->
+            monad {
+                let! plugin = liftPlg <| getPlugin env pluginName
+                let! task = liftTsk <| getTask env taskName
+                let! args =
+                    plugin.properties
+                    |> List.map
+                        ( fun p ->
+                            monad {
+                                do! write (sprintf "Enter value for %s:" p.name)
+                                let! arg = readLine
+                                return PluginArgument.create 0 p arg
+                            }
+                        )
+                    |> List.fold (fun s c -> s >>= (fun xs -> Console.map (fun x -> x::xs) c)) (result [])
+                    |> Console.map List.rev
+                    |> liftCon
+                do! liftTsk <| addPlugin env task (PluginAssignment.create 0 plugin args)
+            }
         | RunMigrationsCommand.GetPlugins ->
             monad {
                 let! plugins = liftPlg <| getPlugins env

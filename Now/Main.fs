@@ -3,7 +3,7 @@ open FSharpPlus.Operators
 
 
 [<EntryPoint>]
-let main argv =    
+let main argv = 
     let result =
         parseCommand (List.ofArray argv)
         |> Result.map runCommand

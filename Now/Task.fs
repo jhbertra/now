@@ -41,6 +41,7 @@ module Task =
         | SqlError of Sql.Error
         | FileError of Fs.Error
         | TaskExists of string
+        | PluginExists of string
         | TaskNotFound of string
         | ActiveTaskIdNotFound of string
         | ActiveTaskExists
@@ -52,24 +53,28 @@ module Task =
     *)
 
     type Instruction<'a> =
+        | AddPlugin of Env * Task * PluginAssignment * 'a
         | CreateTask of Env * string * 'a
         | DeleteTask of Env * string * 'a
         | GetActiveTask of Env * (Task option -> 'a)
-        | SetActiveTask of Env * Task option * 'a
         | GetTask of Env * string * (Task -> 'a)
         | GetTasks of Env * (Task list -> 'a)
+        | RemovePlugin of Env * Task * Plugin * 'a
         | RenameTask of Env * string * string * 'a
+        | SetActiveTask of Env * Task option * 'a
 
     type Program<'a> =
         | Free of Instruction<Program<'a>>
         | Pure of 'a
 
     let private mapI f = function
+        | AddPlugin(env, task, plugin, next) -> AddPlugin(env, task, plugin, next |> f)
         | CreateTask(env, name, next) -> CreateTask(env, name, next |> f)
         | DeleteTask(env, name, next) -> DeleteTask(env, name, next |> f)
         | GetActiveTask(env, next) -> GetActiveTask(env, next >> f)
         | GetTask(env, name, next) -> GetTask(env, name, next >> f)
         | GetTasks(env, next) -> GetTasks(env, next >> f)
+        | RemovePlugin(env, task, plugin, next) -> RemovePlugin(env, task, plugin, next |> f)
         | RenameTask(env, oldName, newName , next) -> RenameTask(env, oldName, newName , next |> f)
         | SetActiveTask(env, task, next) -> SetActiveTask(env, task, next |> f)
 
@@ -85,13 +90,15 @@ module Task =
 
         static member (>>=) (x, f) = bind f x
 
+    let addPlugin env task plugin = Free(AddPlugin(env, task, plugin, Pure()))
     let createTask env name = Free(CreateTask(env, name, Pure()))
     let deleteTask env name = Free(DeleteTask(env, name, Pure()))
     let getActiveTask env = Free(GetActiveTask(env, Pure))
-    let setActiveTask env task = Free(SetActiveTask(env, task, Pure()))
     let getTask env name = Free(GetTask(env, name, Pure))
     let getTasks env = Free(GetTasks(env, Pure))
+    let removePlugin env task plugin = Free(RemovePlugin(env, task, plugin, Pure()))
     let renameTask env oldName newName = Free(RenameTask(env, oldName, newName, Pure()))
+    let setActiveTask env task = Free(SetActiveTask(env, task, Pure()))
 
 
     (*
@@ -251,6 +258,76 @@ module Task =
 
     let rec interpret = function
         | Pure a -> result a
+    
+        | Free(AddPlugin(env, task, plugin, next)) ->
+            monad {
+                if task.plugins |> List.tryFind (fun x -> x.plugin.id = plugin.plugin.id) |> Option.isSome then
+                    do! PluginExists plugin.plugin.name |> Error |> liftRes
+                else
+                    do!
+                        runInTransaction
+                            env.database
+                            (monad {
+                                do! 
+                                    execNonQuery
+                                        env.database
+                                        ( Query
+                                            ( """
+                                              INSERT INTO [TaskPlugin] (TaskId, PluginId)
+                                              VALUES (@taskId, @pluginId)
+                                              """
+                                            , [
+                                                param "@taskId" task.id
+                                                param "@pluginId" plugin.plugin.id
+                                              ]
+                                            )
+                                        )
+                                    |> map ignore
+    
+                                let! taskPluginId =
+                                    execQuery
+                                        env.database
+                                        ( Query
+                                            ( """
+                                              SELECT Id
+                                              FROM [TaskPlugin]
+                                              WHERE [TaskId] = @taskId
+                                                AND [PluginId] = @pluginId
+                                              """
+                                            , [
+                                                param "@taskId" task.id
+                                                param "@pluginId" plugin.plugin.id
+                                              ]
+                                            )
+                                        )
+                                    |> mapReader (fun x -> x.GetInt32 0)
+                                    |> Sql.map List.head
+                        
+                                let rec saveArgs : PluginArgument list -> Sql<unit> = function
+                                    | arg::args ->
+                                        execNonQuery
+                                            env.database
+                                            ( Query
+                                                ( """
+                                                  INSERT INTO [TaskPluginProperty] (TaskPluginId, PluginPropertyId, Value)
+                                                  VALUES (@taskPluginId, @pluginPropertyId, @value)
+                                                  """
+                                                , [
+                                                    param "@taskPluginId" taskPluginId
+                                                    param "@pluginPropertyId" arg.property.id
+                                                    param "@value" arg.value
+                                                  ]
+                                                )
+                                            )
+                                        *> saveArgs args
+                                    | [] -> result ()
+                                    
+                                do! saveArgs plugin.properties
+                            })
+                        |> liftSql'
+            }
+            |> map (konst next)
+            >>= interpret
     
         | Free(CreateTask(env, name, next)) ->
             monad {

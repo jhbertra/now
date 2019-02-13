@@ -1,2 +1,2 @@
 @echo off
-dotnet run --project .\Now\Now.fsproj %*
+dotnet run --project .\Now\Now.fsproj -- %*

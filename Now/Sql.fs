@@ -66,7 +66,6 @@ type Sql<'a> with
 
     static member (>>=) (x, f) = bind f x
 
-
 (*
     Interpreter
 *)
