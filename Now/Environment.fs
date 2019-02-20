@@ -115,9 +115,8 @@ module Env =
 
         | Free(Uninstall next) ->
             monad {
-                let! globalEnv = getEnv ()
-                do! liftSql <| Sql.drop globalEnv.database |> mapError SqlError
-                do! (liftFs <| rmdir globalEnv.rootDir) |> mapError (konst RootDirMissing)
+                let! env = getEnv ()
+                do! (liftFs <| rmdir env.rootDir) |> mapError (konst RootDirMissing)
             }
             |> map (konst next)
             >>= interpret

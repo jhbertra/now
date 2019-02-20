@@ -35,7 +35,6 @@ type Error =
 
 type Instruction<'a> =
     | RunInTransaction of Database * Sql<unit> * 'a
-    | Drop of Database * 'a
     | ExecNonQuery of Database * Query * (int -> 'a)
     | ExecQuery of Database * Query * (SQLiteDataReader -> 'a)
 
@@ -47,7 +46,6 @@ and Sql<'a> =
 
 let private mapI f = function
     | RunInTransaction(db, sql, next) -> RunInTransaction(db, sql, next |> f)
-    | Drop(db, next) -> Drop(db, next |> f)
     | ExecNonQuery(db, query, next) -> ExecNonQuery(db, query, next >> f)
     | ExecQuery(db, query, next) -> ExecQuery(db, query, next >> f)
 
@@ -80,14 +78,14 @@ let private getDbFile (Database (name, location)) = Path.Combine (location, spri
 
 let private getConnection db =
     monad {
-        let! connections = StateT.hoist get
-        match Map.tryFind db connections with
-        | Some (c : SQLiteConnection) ->
+        let! (connection, commands : SQLiteCommand list) = StateT.hoist get
+        match connection with
+        | Some c ->
             return! lift <| Ok c
         | None ->
             let c = new SQLiteConnection(sprintf "Data Source=%s;Version=3;" (getDbFile db))
             c.Open()
-            do! Map.add db c connections |> put |> StateT.hoist
+            do! put (Some c, commands) |> StateT.hoist
             return! lift <| Ok c
     }
 
@@ -100,7 +98,7 @@ let private prepareCommand (text, parameters) (connection : SQLiteConnection) =
     command
 
 
-let rec private interpret'<'a> : Sql<'a> -> StateT<Map<Database, SQLiteConnection>, Result<'a * Map<Database, SQLiteConnection>, Error>> = function
+let rec private interpret'<'a> : Sql<'a> -> StateT<SQLiteConnection option * SQLiteCommand list, Result<'a * (SQLiteConnection option * SQLiteCommand list), Error>> = function
     | Pure a -> lift (Ok a)
 
     | Free(RunInTransaction(db, sql, next)) ->
@@ -119,31 +117,30 @@ let rec private interpret'<'a> : Sql<'a> -> StateT<Map<Database, SQLiteConnectio
         |> map (konst next)
         >>= interpret'
 
-    | Free(Drop(db, next)) ->
-        let x =
-            monad {
-                let! connections = StateT.hoist get
-                match Map.tryFind db connections with
-                | Some (c : SQLiteConnection) ->
-                    c.Close()
-                    c.Dispose()
-                    return! Map.remove db connections |> put |> StateT.hoist
-                | None ->
-                    return! lift <| Ok ()
-            }
-            |> map (konst next)
-        x >>= interpret'
-
     | Free(ExecNonQuery(db, query, next)) ->
         getConnection db
-        |> map (prepareCommand query)
+        >>= (fun connection ->
+                monad {
+                    let command = prepareCommand query connection
+                    let! (_, commands) = StateT.hoist <| get
+                    do! StateT.hoist <| put (Some connection, command :: commands)
+                    return command
+                }
+            )
         |> map (fun (command : SQLiteCommand) -> command.ExecuteNonQuery())
         |> map next
         >>= interpret'
 
     | Free(ExecQuery(db, query, next)) ->
         getConnection db
-        |> map (prepareCommand query)
+        >>= (fun connection ->
+                monad {
+                    let command = prepareCommand query connection
+                    let! (_, commands) = StateT.hoist <| get
+                    do! StateT.hoist <| put (Some connection, command :: commands)
+                    return command
+                }
+            )
         |> map (fun (command : SQLiteCommand) -> command.ExecuteReader())
         |> map next
         >>= interpret'
@@ -152,9 +149,14 @@ let rec private interpret'<'a> : Sql<'a> -> StateT<Map<Database, SQLiteConnectio
 let interpret program =
     try
         monad {
-            let! (result, connections) = StateT.run (interpret' program) Map.empty
-            for connection : SQLiteConnection in Map.values connections do
-                connection.Close()
+            let! (result, (connection, commands)) = StateT.run (interpret' program) (None, [])
+            match connection with
+            | Some (x : SQLiteConnection) ->
+                x.Close()
+                x.Dispose()
+            | None -> ()
+            for command : SQLiteCommand in commands do
+                command.Dispose()
             return result
         }
     with
@@ -168,7 +170,6 @@ let interpret program =
 
 
 let runInTransaction db sql = RunInTransaction(db, sql, Pure ()) |> Free
-let drop db = Drop(db, Pure()) |> Free
 let execNonQuery db query = ExecNonQuery(db, query, Pure) |> Free
 let execQuery db query = ExecQuery(db, query, Pure) |> Free
 

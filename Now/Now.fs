@@ -181,6 +181,7 @@ module Now =
     open Now.Migration
     open Now.Migrations
     open FSharpPlus.Builders
+    open FSharpPlus.Operators
     
     let stopTask env task =
         monad {
@@ -293,3 +294,5 @@ module Now =
                         ]
                 return! runCommandPostMigrations env cmd
             }
+    
+    let main = List.ofArray >> parseCommand >> map runCommand
